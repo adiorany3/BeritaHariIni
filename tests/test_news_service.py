@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import os
 import unittest
 from datetime import datetime
+from unittest.mock import Mock, patch
 
 from news_service import (
     default_query,
     fallback_queries,
+    fetch_news,
+    fetch_raw_markdown,
     parse_search_response,
     parse_search_response_details,
     score_article_quality,
@@ -193,6 +197,47 @@ Ringkasan berita yang membahas inovasi pendidikan digital di Indonesia.
         self.assertGreaterEqual(len(queries), 2)
         self.assertTrue(all("27 Juni 2026" in query for query in queries))
         self.assertEqual(len(queries), len(set(queries)))
+
+
+    def test_fetch_news_limits_slow_fallback_rounds(self) -> None:
+        markdown = """
+### [Artikel Pertama Teknologi Indonesia](https://contoh.id/berita/artikel-pertama-teknologi-indonesia)
+27 Juni 2026
+Ringkasan tentang teknologi Indonesia hari ini.
+"""
+        with patch.dict(os.environ, {"NEWS_MAX_SEARCH_ROUNDS": "2"}, clear=False):
+            with patch("news_service.jakarta_now", return_value=datetime(2026, 6, 27, 14, 0)):
+                with patch("news_service.fetch_raw_markdown", return_value=(markdown, {
+                    "query": "berita",
+                    "fetched_at": DETECTED_AT,
+                    "today_jakarta": "27 Juni 2026",
+                    "content_type": "application/json",
+                    "response_format": "json_preferred",
+                })) as mocked_fetch:
+                    articles, metadata = fetch_news("token", query="berita", max_results=20)
+        self.assertLessEqual(mocked_fetch.call_count, 2)
+        self.assertEqual(metadata["max_search_rounds"], "2")
+        self.assertEqual(metadata["search_rounds"], "2")
+        self.assertEqual(len(articles), 1)
+
+    def test_fetch_raw_markdown_uses_fast_jina_headers(self) -> None:
+        response = Mock()
+        response.text = '{"data": []}'
+        response.headers = {"content-type": "application/json"}
+        response.raise_for_status = Mock()
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("news_service.requests.get", return_value=response) as mocked_get:
+                raw, metadata = fetch_raw_markdown("token", query="berita", now=datetime(2026, 6, 27, 14, 0))
+        _, kwargs = mocked_get.call_args
+        headers = kwargs["headers"]
+        self.assertEqual(raw, '{"data": []}')
+        self.assertEqual(headers["Accept"], "application/json")
+        self.assertEqual(headers["X-Respond-With"], "no-content")
+        self.assertEqual(headers["X-Retain-Images"], "none")
+        self.assertEqual(headers["X-Md-Link-Style"], "discarded")
+        self.assertEqual(headers["X-Timeout"], "12")
+        self.assertEqual(kwargs["timeout"], 25)
+        self.assertEqual(metadata["jina_respond_with"], "no-content")
 
     def test_today_indonesia(self) -> None:
         now = datetime(2026, 6, 27, 10, 0)

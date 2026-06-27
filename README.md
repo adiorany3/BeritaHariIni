@@ -1,13 +1,14 @@
 # Monitor Berita Hari Ini dengan Streamlit, GitHub Actions, dan Telegram
 
-Aplikasi ini mencari berita melalui Jina Search (`s.jina.ai/?q=`) dengan respons JSON terstruktur bila tersedia, menyaring artikel yang memiliki marker waktu **hari ini** pada zona waktu Asia/Jakarta, memberi skor kualitas dan relevansi pada tiap tautan, mengelompokkan artikel berdasarkan kategori, dan mengirim tautan artikel baru ke Telegram. GitHub Actions menjalankan pemeriksaan setiap 30 menit. Streamlit memuat ulang dashboard setiap 5 menit.
+Aplikasi ini mencari berita melalui Jina Search (`s.jina.ai/?q=`) dengan respons JSON terstruktur bila tersedia, menyaring artikel yang memiliki marker waktu **hari ini** pada zona waktu Asia/Jakarta, memberi skor kualitas dan relevansi pada tiap tautan, mengelompokkan artikel berdasarkan kategori, dan mengirim tautan artikel baru ke Telegram. Versi ini memakai mode cepat Jina secara default agar proses tidak berlarut-larut. GitHub Actions menjalankan pemeriksaan setiap 30 menit. Streamlit memuat ulang dashboard setiap 5 menit.
 
 ## Fitur
 
 - Query otomatis menambahkan tanggal Jakarta dan kategori utama: teknologi, edukasi, otomotif, ekonomi, olahraga, serta kesehatan.
 - Mengutamakan `Accept: application/json` ke Jina agar parser menerima `url`, `title`, `content`, dan `timestamp` bila tersedia; parser tetap mendukung Markdown sebagai fallback.
+- Mode Jina default adalah `X-Respond-With: no-content` supaya Search tidak mengambil isi penuh tiap halaman. Ini jauh lebih cepat untuk kebutuhan daftar berita; ubah ke `markdown` hanya bila butuh audit isi yang lebih lengkap.
 - Memprioritaskan artikel yang memiliki marker publikasi hari ini, misalnya `15 menit yang lalu`, `2 jam yang lalu`, `Hari ini`, tanggal Indonesia/Inggris, atau timestamp ISO pada tanggal Jakarta yang sama.
-- Bila hasil berkualitas masih kurang, aplikasi menjalankan beberapa kueri cadangan yang lebih spesifik per topik, lalu menggabungkan dan merangking hasilnya.
+- Bila hasil berkualitas masih kurang, aplikasi menjalankan kueri cadangan secara terbatas, lalu menggabungkan dan merangking hasilnya. Default maksimal hanya **2 pencarian per siklus** agar tidak lambat.
 - Tiap tautan diberi skor kualitas berdasarkan verifikasi waktu, bentuk URL artikel, reputasi domain editorial, kekayaan judul/ringkasan, sinyal clickbait/non-berita, kategori, dan relevansi dengan kueri. Hasil di bawah ambang tidak ditampilkan agar dashboard tidak sekadar berisi link acak.
 - Jika sumber tetap tidak memuat waktu, aplikasi hanya menampilkan tautan langsung sebagai **kandidat artikel** bila skornya tinggi dan memberi label “Perlu cek waktu”. Kandidat tidak disebut berita hari ini dan tidak dikirim ke Telegram.
 - Menolak artikel kemarin, gambar, ikon, iklan, menu, halaman kategori, halaman pencarian, URL perantara seperti Google News, parameter tracking, serta profil, kanal, program, pengikut, subscriber, likes, komentar, dan metrik akun.
@@ -54,6 +55,11 @@ Salin `.env.example` menjadi `.env`, isi nilainya, lalu ekspor sebagai environme
 export JINA_API_KEY="jina_kunci_anda"
 export TELEGRAM_BOT_TOKEN="token_bot_anda"
 export TELEGRAM_CHAT_ID="chat_id_anda"
+# Opsional tuning performa:
+export NEWS_MAX_SEARCH_ROUNDS="2"      # default 2; naikkan hanya jika rela lebih lambat
+export NEWS_REQUEST_TIMEOUT="25"       # timeout HTTP client
+export JINA_PAGE_TIMEOUT="12"          # timeout page-load di sisi Jina via X-Timeout
+export JINA_RESPOND_WITH="no-content"  # no-content = cepat, markdown = audit lebih lengkap
 python worker.py
 ```
 
@@ -67,7 +73,7 @@ streamlit run app.py
 
 1. Buat repository GitHub baru, lalu unggah seluruh isi proyek ini.
 2. Di GitHub, buka **Settings > Secrets and variables > Actions > New repository secret**. Tambahkan `JINA_API_KEY`, `TELEGRAM_BOT_TOKEN`, dan `TELEGRAM_CHAT_ID`.
-3. Opsional, di **Settings > Secrets and variables > Actions > Variables**, buat `NEWS_QUERY` untuk mengganti kueri default.
+3. Opsional, di **Settings > Secrets and variables > Actions > Variables**, buat `NEWS_QUERY` untuk mengganti kueri default. Untuk tuning performa, tambahkan `NEWS_MAX_SEARCH_ROUNDS`, `NEWS_REQUEST_TIMEOUT`, `JINA_PAGE_TIMEOUT`, atau `JINA_RESPOND_WITH`.
 4. Buka tab **Actions**, jalankan workflow **Pantau berita dan Telegram** dengan **Run workflow** satu kali untuk membuat data awal.
 5. Di Streamlit Community Cloud, buat aplikasi baru dari repo ini dengan file utama `app.py`.
 6. Pada **Settings > Secrets** Streamlit, masukkan:
@@ -86,9 +92,18 @@ NEWS_DATA_URL = ""
 python -m unittest discover -s tests -v
 ```
 
+## Konfigurasi performa
+
+| Variable | Default | Fungsi |
+| --- | ---: | --- |
+| `NEWS_MAX_SEARCH_ROUNDS` | `2` | Batas jumlah query Jina per siklus. Naikkan bila butuh recall lebih besar, turunkan ke `1` bila ingin paling cepat. |
+| `NEWS_REQUEST_TIMEOUT` | `25` | Timeout HTTP client Python. |
+| `JINA_PAGE_TIMEOUT` | `12` | Dikirim sebagai header `X-Timeout` ke Jina untuk membatasi waktu load halaman. |
+| `JINA_RESPOND_WITH` | `no-content` | Mode cepat. Gunakan `markdown` bila ingin panel audit berisi konten lebih lengkap, tetapi proses bisa lebih lama. |
+
 ## Catatan operasional
 
-- Tanggal dari sumber tidak selalu tersedia. Karena itu, tautan tanpa marker waktu hanya muncul sebagai kandidat verifikasi pada dashboard setelah kueri cadangan selesai dan hanya bila skor kualitasnya tinggi. Kandidat tersebut tidak pernah dikirim sebagai notifikasi Telegram.
+- Tanggal dari sumber tidak selalu tersedia. Karena itu, tautan tanpa marker waktu hanya muncul sebagai kandidat verifikasi pada dashboard setelah pencarian terbatas selesai dan hanya bila skor kualitasnya tinggi. Kandidat tersebut tidak pernah dikirim sebagai notifikasi Telegram.
 - Artikel dengan marker relatif dihitung terhadap waktu pemeriksaan Jakarta. Contoh: pada pukul 00:30, artikel `2 jam yang lalu` dianggap berasal dari hari sebelumnya dan dikeluarkan.
 - GitHub Actions terjadwal dapat terlambat. Dashboard menunjukkan waktu pemeriksaan terakhir agar kondisi ini terlihat.
 - Batasi `NOTIFICATION_LIMIT` agar Telegram tidak menerima terlalu banyak pesan pada pemeriksaan pertama.

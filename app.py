@@ -29,6 +29,19 @@ def get_secret(name: str) -> str:
         return ""
 
 
+def apply_runtime_config_from_secrets() -> None:
+    """Izinkan konfigurasi performa dari Streamlit Secrets selain environment variable."""
+    for name in ("NEWS_MAX_SEARCH_ROUNDS", "NEWS_REQUEST_TIMEOUT", "JINA_PAGE_TIMEOUT", "JINA_RESPOND_WITH"):
+        if os.getenv(name):
+            continue
+        value = get_secret(name)
+        if value:
+            os.environ[name] = value
+
+
+apply_runtime_config_from_secrets()
+
+
 def load_dashboard_data() -> dict[str, Any]:
     """Baca data commit GitHub atau URL raw GitHub bila dikonfigurasi."""
     data_url = get_secret("NEWS_DATA_URL")
@@ -141,12 +154,12 @@ def display_raw_response(raw_markdown: str, metadata: dict[str, str]) -> None:
         col1.metric("Kandidat tautan", metadata.get("raw_candidates", "-"))
         col2.metric("Waktu terverifikasi", metadata.get("today_articles", "-"))
         col3.metric("Pencarian dijalankan", metadata.get("search_rounds", "1"))
-        st.code(raw_markdown, language="markdown", wrap_lines=True)
+        st.code(raw_markdown, language="json", wrap_lines=True)
         st.download_button(
-            "Unduh respons Markdown",
+            "Unduh respons Jina",
             data=raw_markdown,
-            file_name="respons-jina-berita.md",
-            mime="text/markdown",
+            file_name="respons-jina-berita.txt",
+            mime="text/plain",
         )
 
 
@@ -161,6 +174,8 @@ with st.sidebar:
     st.write("Token Jina:", "✅ tersedia" if get_secret("JINA_API_KEY") else "⚠️ belum diatur")
     st.write("Pembaruan dashboard:", "otomatis setiap 5 menit")
     st.write("Notifikasi Telegram:", "dikirim oleh GitHub Actions")
+    st.write("Mode Jina:", os.getenv("JINA_RESPOND_WITH", "no-content"))
+    st.write("Maks. pencarian/siklus:", os.getenv("NEWS_MAX_SEARCH_ROUNDS", "2"))
     st.divider()
     st.caption("Buka sumber asli untuk memeriksa isi, konteks, dan waktu publikasi artikel.")
 
@@ -177,7 +192,7 @@ metric_last.metric("Pembaruan terakhir", metadata.get("fetched_at", "Belum ada")
 with st.expander("Cari langsung dari Jina Search", expanded=True):
     st.caption(
         "Sistem membuang gambar, menu, profil sosial, kanal, angka followers, likes, subscribers, URL perantara, "
-        "dan artikel kemarin. Bila hasil pertama belum cukup, sistem mencoba kueri cadangan dan hanya menampilkan tautan langsung ke artikel atau postingan asli."
+        "dan artikel kemarin. Pencarian cadangan dibatasi agar proses tetap cepat, lalu hasil diranking sebelum ditampilkan."
     )
     query = st.text_input("Kata kunci", value=default_query())
     if st.button("Cari berita terbaru hari ini", type="primary"):

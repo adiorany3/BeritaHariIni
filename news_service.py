@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from hashlib import sha256
 import json
+import os
 import re
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -190,7 +191,13 @@ NEWS_VERB_RE = re.compile(
     r"investigasi|laporkan|minta|duga|temukan|prediksi|peringatkan)\b",
     re.IGNORECASE,
 )
-QUALITY_TARGET_RESULTS = 8
+# Jina Search mode umumnya mengembalikan 5 hasil teratas per request.
+# Target yang terlalu tinggi membuat aplikasi menjalankan banyak fallback berurutan.
+QUALITY_TARGET_RESULTS = 5
+DEFAULT_MAX_SEARCH_ROUNDS = 2
+DEFAULT_REQUEST_TIMEOUT = 25
+DEFAULT_JINA_PAGE_TIMEOUT = 12
+DEFAULT_JINA_RESPOND_WITH = "no-content"
 MIN_VERIFIED_QUALITY_SCORE = 58
 MIN_UNVERIFIED_QUALITY_SCORE = 72
 
@@ -293,6 +300,40 @@ def default_query(now: datetime | None = None) -> str:
 def category_labels() -> list[str]:
     """Daftar kategori dalam urutan tampilan dashboard."""
     return [CATEGORY_LABELS[key] for key in CATEGORY_ORDER]
+
+
+def _env_int(name: str, default: int, *, minimum: int = 1, maximum: int | None = None) -> int:
+    """Ambil konfigurasi integer dari environment dengan batas aman."""
+    raw = os.getenv(name, "").strip()
+    try:
+        value = int(raw) if raw else default
+    except ValueError:
+        value = default
+    value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
+
+
+def configured_max_search_rounds() -> int:
+    """Jumlah pencarian Jina maksimal per siklus. Default dibuat rendah agar respons cepat."""
+    return _env_int("NEWS_MAX_SEARCH_ROUNDS", DEFAULT_MAX_SEARCH_ROUNDS, minimum=1, maximum=6)
+
+
+def configured_request_timeout(default: int = DEFAULT_REQUEST_TIMEOUT) -> int:
+    """Timeout HTTP client. Dapat dioverride dengan NEWS_REQUEST_TIMEOUT."""
+    return _env_int("NEWS_REQUEST_TIMEOUT", default, minimum=8, maximum=90)
+
+
+def configured_jina_page_timeout(default: int = DEFAULT_JINA_PAGE_TIMEOUT) -> int:
+    """Batas waktu page load di sisi Jina Reader/Search melalui header X-Timeout."""
+    return _env_int("JINA_PAGE_TIMEOUT", default, minimum=5, maximum=45)
+
+
+def configured_jina_respond_with() -> str:
+    """Mode respons Jina. no-content lebih cepat; markdown dapat dipakai untuk audit mendalam."""
+    value = os.getenv("JINA_RESPOND_WITH", DEFAULT_JINA_RESPOND_WITH).strip().lower()
+    return value if value in {"no-content", "markdown", "html", "text"} else DEFAULT_JINA_RESPOND_WITH
 
 
 def _clean_text(value: Any, limit: int = 500) -> str:
@@ -690,6 +731,19 @@ def _normalise_item(
     }
 
 
+def _count_json_candidates(value: Any) -> int:
+    """Hitung item JSON yang minimal punya judul dan URL untuk metrik audit."""
+    if isinstance(value, dict):
+        current = 1 if (
+            (value.get("title") or value.get("name") or value.get("headline"))
+            and (value.get("url") or value.get("link") or value.get("href"))
+        ) else 0
+        return current + sum(_count_json_candidates(child) for child in value.values())
+    if isinstance(value, list):
+        return sum(_count_json_candidates(child) for child in value)
+    return 0
+
+
 def _walk_json(
     value: Any,
     detected_at: str,
@@ -902,8 +956,13 @@ def score_article_quality(
         else:
             score += 2
     else:
-        score -= 5
-        reasons.append("ringkasan kosong")
+        # Mode cepat `X-Respond-With: no-content` dari Jina sering tidak membawa isi penuh.
+        # Jangan hukum terlalu keras bila artikel sudah punya judul, URL, dan waktu valid.
+        if time_status == "verified_today":
+            score -= 1
+        else:
+            score -= 5
+            reasons.append("ringkasan kosong")
 
     terms = _query_terms(query)
     if terms:
@@ -1003,6 +1062,7 @@ def parse_search_response_details(
 
     raw_candidates = 0
     if parsed is not None:
+        raw_candidates = _count_json_candidates(parsed)
         items = _walk_json(parsed, detected_at, now)
     elif isinstance(payload, str):
         items, raw_candidates = _parse_markdown(payload, detected_at, now)
@@ -1070,9 +1130,10 @@ def fallback_queries(primary_query: str, now: datetime | None = None) -> list[st
 def fetch_raw_markdown(
     api_key: str,
     query: str | None = None,
-    timeout: int = 45,
+    timeout: int | None = None,
     *,
     now: datetime | None = None,
+    respond_with: str | None = None,
 ) -> tuple[str, dict[str, str]]:
     """Ambil respons mentah dari Jina Search.
 
@@ -1085,18 +1146,23 @@ def fetch_raw_markdown(
 
     current_now = _as_jakarta(now)
     query = (query or default_query(current_now)).strip()
+    request_timeout = configured_request_timeout(timeout or DEFAULT_REQUEST_TIMEOUT)
+    page_timeout = configured_jina_page_timeout(min(request_timeout, DEFAULT_JINA_PAGE_TIMEOUT))
+    response_mode = (respond_with or configured_jina_respond_with()).strip().lower()
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Accept": "application/json",
-        "X-Respond-With": "markdown",
+        "X-Respond-With": response_mode,
         "X-Retain-Images": "none",
-        "User-Agent": "news-monitor-streamlit/4.0",
+        "X-Md-Link-Style": "discarded",
+        "X-Timeout": str(page_timeout),
+        "User-Agent": "news-monitor-streamlit/4.1-fast",
     }
     response = requests.get(
         JINA_SEARCH_URL,
         params={"q": query},
         headers=headers,
-        timeout=timeout,
+        timeout=request_timeout,
     )
     response.raise_for_status()
 
@@ -1110,6 +1176,9 @@ def fetch_raw_markdown(
         "today_jakarta": today_indonesia(current_now),
         "content_type": response.headers.get("content-type", "tidak diketahui"),
         "response_format": "json_preferred",
+        "jina_respond_with": response_mode,
+        "request_timeout_seconds": str(request_timeout),
+        "jina_page_timeout_seconds": str(page_timeout),
         "quality_threshold_verified": str(MIN_VERIFIED_QUALITY_SCORE),
         "quality_threshold_unverified": str(MIN_UNVERIFIED_QUALITY_SCORE),
     }
@@ -1120,14 +1189,17 @@ def _fetch_rounds(
     api_key: str,
     query: str | None,
     max_results: int,
-    timeout: int,
+    timeout: int | None,
     *,
     allow_unverified_fallback: bool,
+    max_search_rounds: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, str], str]:
     """Jalankan pencarian utama lalu beberapa kueri cadangan sampai hasil berkualitas cukup."""
     now = jakarta_now()
     primary_query = (query or default_query(now)).strip()
-    queries = [primary_query, *fallback_queries(primary_query, now)]
+    all_queries = [primary_query, *fallback_queries(primary_query, now)]
+    round_limit = max(1, min(max_search_rounds or configured_max_search_rounds(), len(all_queries)))
+    queries = all_queries[:round_limit]
     raw_sections: list[str] = []
     parsed_rounds: list[tuple[list[dict[str, Any]], dict[str, int], str]] = []
     metadata: dict[str, str] | None = None
@@ -1185,6 +1257,8 @@ def _fetch_rounds(
             "unverified_articles": str(unverified_count),
             "search_rounds": str(len(parsed_rounds)),
             "fallback_search_used": "true" if len(parsed_rounds) > 1 else "false",
+            "max_search_rounds": str(round_limit),
+            "target_results_for_fast_stop": str(target_results),
             "result_mode": "verified_today" if verified_count else (
                 "needs_time_verification" if used_unverified else "none"
             ),
@@ -1197,7 +1271,8 @@ def fetch_news(
     api_key: str,
     query: str | None = None,
     max_results: int = 20,
-    timeout: int = 45,
+    timeout: int | None = None,
+    max_search_rounds: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
     """Ambil berita terverifikasi, atau kandidat artikel langsung bila marker waktu tidak tersedia.
 
@@ -1210,6 +1285,7 @@ def fetch_news(
         max_results,
         timeout,
         allow_unverified_fallback=True,
+        max_search_rounds=max_search_rounds,
     )
     return articles, metadata
 
@@ -1218,7 +1294,8 @@ def fetch_news_with_raw(
     api_key: str,
     query: str | None = None,
     max_results: int = 20,
-    timeout: int = 45,
+    timeout: int | None = None,
+    max_search_rounds: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, str], str]:
     """Varian Streamlit dengan pencarian cadangan dan respons Markdown untuk audit."""
     return _fetch_rounds(
@@ -1227,4 +1304,5 @@ def fetch_news_with_raw(
         max_results,
         timeout,
         allow_unverified_fallback=True,
+        max_search_rounds=max_search_rounds,
     )
