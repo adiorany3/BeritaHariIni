@@ -5,6 +5,7 @@ import logging
 import os
 from pathlib import Path
 
+from config import apply_secrets_to_environment, get_secret, get_secret_int
 from news_service import fetch_news
 from storage import read_json, write_json
 
@@ -17,9 +18,10 @@ LOGGER = logging.getLogger(__name__)
 
 
 def main() -> None:
-    api_key = os.environ.get("JINA_API_KEY", "").strip()
-    query = os.environ.get("NEWS_QUERY", "").strip() or None
-    max_results = int(os.environ.get("MAX_RESULTS", "20"))
+    apply_secrets_to_environment()
+    api_key = get_secret("JINA_API_KEY", "")
+    query = get_secret("NEWS_QUERY", "").strip() or None
+    max_results = get_secret_int("MAX_RESULTS", 20, minimum=1, maximum=100)
 
     articles, metadata = fetch_news(api_key, query=query, max_results=max_results)
     previous = read_json(LATEST_PATH, {"articles": []})

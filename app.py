@@ -9,6 +9,7 @@ import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
+from config import apply_secrets_to_environment, get_secret, has_secret
 from news_service import CATEGORY_ORDER, category_labels, default_query, fetch_news_with_raw
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -17,32 +18,9 @@ st.set_page_config(page_title="Monitor Berita Hari Ini", page_icon="📰", layou
 st_autorefresh(interval=300_000, key="news_auto_refresh")
 
 
-def get_secret(name: str) -> str:
-    value = os.getenv(name, "")
-    if value:
-        return value
-    try:
-        return str(st.secrets.get(name, ""))
-    except FileNotFoundError:
-        return ""
-
-
-def apply_runtime_config_from_secrets() -> None:
-    """Izinkan konfigurasi performa dari Streamlit Secrets selain environment variable."""
-    for name in (
-        "NEWS_MAX_SEARCH_ROUNDS", "NEWS_REQUEST_TIMEOUT", "JINA_PAGE_TIMEOUT",
-        "JINA_RESPOND_WITH", "NEWS_ENABLE_RSS", "NEWS_RSS_TIMEOUT",
-        "NEWS_MAX_RSS_FEEDS", "NEWS_ALLOW_SOCIAL", "NEWS_ENABLE_ARTICLE_SCRAPE",
-        "NEWS_ARTICLE_SCRAPE_TIMEOUT", "NEWS_MAX_ARTICLE_SCRAPES",
-    ):
-        if os.getenv(name):
-            continue
-        value = get_secret(name)
-        if value:
-            os.environ[name] = value
-
-
-apply_runtime_config_from_secrets()
+# Streamlit Community Cloud menyimpan secrets di panel Settings > Secrets.
+# Salin ke environment supaya news_service tetap dapat membaca konfigurasi lama.
+apply_secrets_to_environment()
 
 
 
@@ -175,7 +153,7 @@ st.caption(
 
 with st.sidebar:
     st.header("Status")
-    st.write("Token Jina:", "✅ tersedia" if get_secret("JINA_API_KEY") else "⚠️ belum diatur")
+    st.write("Token Jina:", "✅ tersedia" if has_secret("JINA_API_KEY") else "⚠️ belum diatur")
     st.write("Pembaruan dashboard:", "otomatis setiap 5 menit")
     st.write("RSS penerbit:", "✅ aktif" if os.getenv("NEWS_ENABLE_RSS", "1") not in {"0", "false", "False"} else "nonaktif")
     st.write("Mode Jina:", os.getenv("JINA_RESPOND_WITH", "no-content"))
@@ -201,7 +179,7 @@ with st.expander("Cari berita langsung", expanded=True):
     if st.button("Cari berita terbaru hari ini", type="primary"):
         api_key = get_secret("JINA_API_KEY")
         if not api_key:
-            st.error("Atur JINA_API_KEY di Streamlit Secrets untuk menjalankan pencarian langsung.")
+            st.error("Atur JINA_API_KEY di Streamlit Secrets untuk menjalankan pencarian langsung. Jangan commit token ke GitHub.")
         else:
             try:
                 with st.spinner("Mengambil, menyaring, dan men-scrape informasi utama artikel..."):
