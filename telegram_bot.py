@@ -20,7 +20,7 @@ from typing import Any
 import requests
 
 from config import apply_secrets_to_environment, get_secret, get_secret_bool, get_secret_int
-from news_service import fetch_news
+from news_service import build_jina_reader_url, fetch_news
 
 LOGGER = logging.getLogger(__name__)
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}/{method}"
@@ -35,7 +35,7 @@ HELP_TEXT = """📰 <b>Bot Berita Hari Ini</b>
 Kirim tema berita, nanti bot akan mencari artikel hari ini dan membalas:
 • judul
 • ringkasan/informasi utama
-• link berita asli
+• link versi bersih Jina dan link berita asli
 
 Contoh:
 <code>harga telur</code>
@@ -112,7 +112,9 @@ def format_article(article: dict[str, Any], index: int) -> str:
     source = _escape(article.get("source") or "sumber tidak diketahui")
     published_at = _escape(article.get("published_at") or "waktu tidak diketahui")
     url = str(article.get("url") or "").strip()
+    jina_reader_url = build_jina_reader_url(url)
     safe_url = html.escape(url, quote=True)
+    safe_jina_url = html.escape(jina_reader_url, quote=True)
 
     lines = [
         f"<b>{index}. {title}</b>",
@@ -120,6 +122,8 @@ def format_article(article: dict[str, Any], index: int) -> str:
         f"🏷️ {source} • {published_at}",
     ]
     if url.startswith(("http://", "https://")):
+        if jina_reader_url:
+            lines.append(f'🧹 <a href="{safe_jina_url}">Baca versi bersih (Jina)</a>')
         lines.append(f'🔗 <a href="{safe_url}">Buka berita asli</a>')
     return "\n".join(lines)
 

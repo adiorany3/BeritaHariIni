@@ -13,6 +13,7 @@ from news_service import (
     fallback_queries,
     fetch_news,
     fetch_article_information,
+    build_jina_reader_url,
     fetch_raw_markdown,
     source_scoped_query,
     parse_search_response,
@@ -329,6 +330,14 @@ Sementara itu harga beras relatif stabil di sejumlah pasar tradisional.
         self.assertIn("Rp32.000", info)
         self.assertNotIn("https://", info)
         self.assertNotIn("Markdown Content", info)
+
+
+    def test_build_jina_reader_url_keeps_original_url_clean(self) -> None:
+        self.assertEqual(
+            build_jina_reader_url("https://www.example.com/news/read?id=1&utm_source=x#comments"),
+            "https://r.jina.ai/https://www.example.com/news/read?id=1",
+        )
+        self.assertEqual(build_jina_reader_url("not-a-url"), "")
 
     def test_fetch_article_information_uses_jina_reader_without_opening_source_site(self) -> None:
         response = Mock()

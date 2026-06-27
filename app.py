@@ -10,7 +10,7 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 from config import apply_secrets_to_environment, get_secret, get_secret_bool, has_secret
-from news_service import CATEGORY_ORDER, category_labels, default_query, fetch_news_with_raw
+from news_service import CATEGORY_ORDER, build_jina_reader_url, category_labels, default_query, fetch_news_with_raw
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -95,8 +95,14 @@ def render_article_card(article: dict[str, str]) -> None:
         if article.get("scrape_status") and not article.get("scraped_info"):
             st.caption(f"Info scrape: {article['scrape_status']}")
         original_url = article.get("url", "").strip()
+        jina_reader_url = build_jina_reader_url(original_url)
         if original_url.startswith(("http://", "https://")):
-            st.link_button("Buka berita asli", original_url, use_container_width=False)
+            link_left, link_right = st.columns([1, 1])
+            with link_left:
+                if jina_reader_url:
+                    st.link_button("Baca versi bersih (Jina)", jina_reader_url, use_container_width=True)
+            with link_right:
+                st.link_button("Buka berita asli", original_url, use_container_width=True)
 
 
 def render_grouped_articles(articles: list[dict[str, str]], empty_message: str) -> None:

@@ -1,6 +1,6 @@
 # Monitor Berita Hari Ini dengan Streamlit
 
-Aplikasi ini mencari berita terbaru dengan pendekatan **RSS-first, Jina Search fallback, lalu scrape informasi artikel**. RSS penerbit resmi dicek lebih dulu karena biasanya lebih cepat, lebih bersih, dan langsung berisi URL artikel. Jika hasil RSS belum cukup, aplikasi baru memakai Jina Search (`s.jina.ai/?q=`) dengan kueri sederhana per-domain media berita tepercaya. Sosial/video tetap diblokir di parser agar query tidak terlalu kompleks dan tidak memicu error 422 dari Jina. Setelah artikel akhir dipilih, aplikasi memakai Jina Reader (`r.jina.ai/<url>`) untuk mengambil informasi utama dari isi artikel. Link asli tetap ditampilkan agar pengguna bisa membaca berita lengkap di sumbernya bila diperlukan. Selain dashboard Streamlit, versi ini juga menyediakan **Telegram Bot interaktif** dan **worker broadcast pagi**: user bisa mengirim tema, atau GitHub Actions bisa mengirim digest berita terbaru setiap pagi ke chat Telegram.
+Aplikasi ini mencari berita terbaru dengan pendekatan **RSS-first, Jina Search fallback, lalu scrape informasi artikel**. RSS penerbit resmi dicek lebih dulu karena biasanya lebih cepat, lebih bersih, dan langsung berisi URL artikel. Jika hasil RSS belum cukup, aplikasi baru memakai Jina Search (`s.jina.ai/?q=`) dengan kueri sederhana per-domain media berita tepercaya. Sosial/video tetap diblokir di parser agar query tidak terlalu kompleks dan tidak memicu error 422 dari Jina. Setelah artikel akhir dipilih, aplikasi memakai Jina Reader (`r.jina.ai/<url>`) untuk mengambil informasi utama dari isi artikel. Setiap kartu/pesan juga menyediakan link **Baca versi bersih (Jina)** dengan format `https://r.jina.ai/https://www.example.com/artikel` agar klik baca lebih minim iklan/menu, dan link **Buka berita asli** tetap ditampilkan agar pengguna bisa membaca sumber lengkap. Selain dashboard Streamlit, versi ini juga menyediakan **Telegram Bot interaktif** dan **worker broadcast pagi**: user bisa mengirim tema, atau GitHub Actions bisa mengirim digest berita terbaru setiap pagi ke chat Telegram.
 
 Tujuan versi ini: menghasilkan berita yang **bermutu, relevan, informatif, dan bukan sekadar kumpulan link acak**.
 
@@ -9,7 +9,7 @@ Versi ini tidak lagi menampilkan hasil tersimpan dari workflow. Telegram menduku
 ## Fitur utama
 
 - **RSS penerbit resmi diprioritaskan** sebelum SERP umum, tetapi sekarang tetap mengikuti keyword search. Untuk keyword spesifik, RSS umum yang tidak cocok akan dibuang dan aplikasi lanjut ke Jina fallback.
-- **Informasi utama artikel di-scrape otomatis** memakai Jina Reader setelah URL final lolos filter. Dashboard menampilkan inti isi artikel langsung di kartu berita, sekaligus tetap menyediakan tombol **Buka berita asli**.
+- **Informasi utama artikel di-scrape otomatis** memakai Jina Reader setelah URL final lolos filter. Dashboard menampilkan inti isi artikel langsung di kartu berita, menyediakan tombol **Baca versi bersih (Jina)**, dan tetap menyediakan tombol **Buka berita asli**.
 - Query default tidak lagi menyebut platform sosial/video. Jina fallback memakai query `site:` **satu domain per request** ke media berita seperti Kompas, Detik, CNN Indonesia, CNBC Indonesia, Tempo, Antara, Liputan6, Bisnis, Katadata, Kontan, Republika, Kumparan, Tirto, Suara, dan Okezone. Query sengaja tidak memakai `OR`, tanda kurung, quote frasa, atau rangkaian `-site:` panjang agar tidak ditolak `s.jina.ai` dengan 422.
 - Respons Jina tetap memakai mode cepat:
   - `Accept: application/json`
@@ -37,8 +37,8 @@ Versi ini tidak lagi menampilkan hasil tersimpan dari workflow. Telegram menduku
 - Untuk query spesifik di kolom search, relevansi sekarang menjadi **filter wajib**, bukan sekadar bonus skor. Kueri multi-kata seperti `harga telur` diperlakukan sebagai **frasa/intent utuh**, bukan pencarian longgar `harga` OR `telur`. Ini mencegah hasil RSS umum atau hasil yang hanya cocok sebagian tampil statis ketika pengguna mencari topik tertentu.
 - Sosial/video **diblokir secara default**. Jika benar-benar ingin menerima konten sosial individual, aktifkan `NEWS_ALLOW_SOCIAL=1`, tetapi ini tidak disarankan untuk mode berita bermutu.
 - Panel audit menampilkan sumber mentah RSS/Jina sebagai kode agar gambar, HTML, dan iklan tidak dimuat.
-- Link asli tetap ditampilkan pada kartu sebagai tombol **Buka berita asli**, sehingga ringkasan berfungsi sebagai preview dan pengguna tetap bisa membuka sumber lengkap.
-- **Telegram Bot interaktif** tersedia lewat `telegram_bot.py`: kirim tema seperti `harga telur`, lalu bot membalas daftar judul, ringkasan/informasi utama, dan link berita asli.
+- Link asli tetap ditampilkan pada kartu sebagai tombol **Buka berita asli**, sedangkan tombol **Baca versi bersih (Jina)** membuka `https://r.jina.ai/<url-asli>` untuk tampilan teks yang lebih bersih. Ringkasan berfungsi sebagai preview sehingga pengguna tidak perlu membuka semua berita hanya untuk mengetahui isinya.
+- **Telegram Bot interaktif** tersedia lewat `telegram_bot.py`: kirim tema seperti `harga telur`, lalu bot membalas daftar judul, ringkasan/informasi utama, link versi bersih Jina, dan link berita asli.
 - **Broadcast pagi Telegram** tersedia lewat `worker.py` dan workflow `.github/workflows/morning-news.yml`: GitHub Actions menjalankan worker setiap pagi dan mengirim digest ke chat Telegram yang Anda tentukan.
 
 ## Struktur proyek
@@ -169,7 +169,7 @@ Workflow `.github/workflows/morning-news.yml` menjalankan `python worker.py` set
 
 1. mengambil berita terbaru hari ini,
 2. membuat ringkasan/informasi utama,
-3. mengirim judul + ringkasan + link asli ke Telegram.
+3. mengirim judul + ringkasan + link versi bersih Jina + link asli ke Telegram.
 
 Secret GitHub yang wajib dibuat:
 

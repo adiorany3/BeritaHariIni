@@ -598,6 +598,22 @@ def _valid_url(value: Any) -> str:
     return urlunparse(normalised)
 
 
+def build_jina_reader_url(url: Any) -> str:
+    """Bangun link baca versi bersih lewat Jina Reader tanpa menghilangkan URL asli.
+
+    Format yang dipakai: https://r.jina.ai/https://example.com/artikel
+    Link ini berguna sebagai opsi baca minim iklan/menu, sementara link asli tetap
+    disimpan dan ditampilkan untuk membuka sumber penuh.
+    """
+    clean_url = _valid_url(url)
+    if not clean_url:
+        return ""
+    parsed = urlparse(clean_url)
+    if parsed.netloc.lower().removeprefix("www.") == "r.jina.ai":
+        return clean_url
+    return f"{JINA_READER_URL}{clean_url}"
+
+
 def _host(url: str) -> str:
     return urlparse(url).netloc.lower().removeprefix("www.")
 

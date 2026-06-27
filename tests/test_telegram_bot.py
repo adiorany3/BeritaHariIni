@@ -44,6 +44,8 @@ class TelegramBotTests(unittest.TestCase):
         text = "\n".join(messages)
         self.assertIn("Harga Telur Ayam Naik", text)
         self.assertIn("Rp32.000", text)
+        self.assertIn("Baca versi bersih", text)
+        self.assertIn("https://r.jina.ai/https://www.kompas.com/read/2026/06/27/harga-telur", text)
         self.assertIn("Buka berita asli", text)
         self.assertIn("https://www.kompas.com/read/2026/06/27/harga-telur", text)
 
