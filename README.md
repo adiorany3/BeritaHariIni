@@ -5,14 +5,15 @@ Aplikasi ini mencari berita melalui Jina Search dengan `X-Engine: direct`, menya
 ## Fitur
 
 - Query otomatis menambahkan tanggal Jakarta dan kategori utama: teknologi, edukasi, otomotif, ekonomi, olahraga, serta kesehatan.
-- Hanya menyimpan artikel yang memiliki marker publikasi hari ini, misalnya `15 menit yang lalu`, `2 jam yang lalu`, `Hari ini`, atau tanggal yang sama dengan tanggal Jakarta.
-- Menolak artikel kemarin, tautan tanpa waktu, gambar, ikon, iklan, menu, halaman kategori, halaman pencarian, URL perantara seperti Google News, serta profil, kanal, program, pengikut, subscriber, likes, komentar, dan metrik akun.
+- Memprioritaskan artikel yang memiliki marker publikasi hari ini, misalnya `15 menit yang lalu`, `2 jam yang lalu`, `Hari ini`, atau tanggal yang sama dengan tanggal Jakarta.
+- Bila pencarian utama tidak menghasilkan artikel bertanda waktu, aplikasi menjalankan hingga tiga kueri cadangan. Jika sumber tetap tidak memuat waktu, aplikasi menampilkan tautan artikel langsung sebagai **kandidat artikel** dengan label “Perlu cek waktu”. Kandidat tidak disebut berita hari ini dan tidak dikirim ke Telegram.
+- Menolak artikel kemarin, gambar, ikon, iklan, menu, halaman kategori, halaman pencarian, URL perantara seperti Google News, serta profil, kanal, program, pengikut, subscriber, likes, komentar, dan metrik akun.
 - Menerima konten sosial individual yang memiliki URL postingan atau video langsung, misalnya Instagram Post/Reel, YouTube Watch/Shorts, TikTok Video, X Post, Threads Post, Facebook Reel/Post, LinkedIn Post, Reddit Post, dan Telegram Post.
 - Semua tombol **Buka artikel asli** memakai URL langsung ke artikel penerbit atau postingan sosial individual. Aplikasi tidak menampilkan gambar hasil scraping maupun metrik engagement.
 - Kategori: Teknologi, Edukasi, Otomotif, Ekonomi & Bisnis, Olahraga, Kesehatan, Hiburan, Politik, Hukum & Kriminal, Internasional, Gaya Hidup & Perjalanan, Lingkungan & Cuaca, dan Lainnya.
 - Filter kategori serta judul atau sumber tersedia untuk hasil pencarian langsung dan hasil GitHub Actions.
 - Respons Markdown mentah Jina tersedia pada panel audit, tetapi ditampilkan sebagai kode agar gambar, HTML, dan iklan tidak dimuat.
-- Telegram hanya menerima artikel atau konten sosial langsung yang belum pernah dikirim. Pesan memuat kategori, sumber, waktu, dan URL asli tanpa metrik engagement.
+- Telegram hanya menerima artikel atau konten sosial langsung yang waktu publikasinya terverifikasi hari ini dan belum pernah dikirim. Pesan memuat kategori, sumber, waktu, dan URL asli tanpa metrik engagement.
 - Token serta chat ID tidak tersimpan dalam source code.
 
 ## Struktur proyek
@@ -84,7 +85,7 @@ python -m unittest discover -s tests -v
 
 ## Catatan operasional
 
-- Tanggal dari sumber tidak selalu tersedia. Agar rentang waktu konsisten, tautan tanpa marker waktu sengaja tidak ditampilkan.
+- Tanggal dari sumber tidak selalu tersedia. Karena itu, tautan tanpa marker waktu hanya muncul sebagai kandidat verifikasi pada dashboard setelah kueri cadangan selesai. Kandidat tersebut tidak pernah dikirim sebagai notifikasi Telegram.
 - Artikel dengan marker relatif dihitung terhadap waktu pemeriksaan Jakarta. Contoh: pada pukul 00:30, artikel `2 jam yang lalu` dianggap berasal dari hari sebelumnya dan dikeluarkan.
 - GitHub Actions terjadwal dapat terlambat. Dashboard menunjukkan waktu pemeriksaan terakhir agar kondisi ini terlihat.
 - Batasi `NOTIFICATION_LIMIT` agar Telegram tidak menerima terlalu banyak pesan pada pemeriksaan pertama.

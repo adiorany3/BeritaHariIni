@@ -185,7 +185,7 @@ HEADING_LINK_RE = re.compile(
 )
 LINK_RE = re.compile(r"(?<![!\[])\[([^\]\n]{3,300})\]\((https?://[^\s)]+)\)")
 RELATIVE_TIME_RE = re.compile(
-    r"\b(\d{1,3})\s*(menit|jam|detik)\s*(?:yang\s*)?lalu\b", re.IGNORECASE
+    r"\b(\d{1,3})\s*(menit|jam|detik|hari)\s*(?:yang\s*)?lalu\b", re.IGNORECASE
 )
 DAY_MONTH_RE = re.compile(
     r"\b(?:senin|selasa|rabu|kamis|jumat|jum'at|sabtu|minggu)?\s*,?\s*"
@@ -486,13 +486,33 @@ def _extract_summary(context: str) -> str:
     return _clean_text(" ".join(useful), 450)
 
 
+def _has_publication_signal(value: str) -> bool:
+    """True saat konteks memuat tanggal atau marker waktu publikasi apa pun."""
+    text = _clean_text(value, 1400)
+    lower = text.lower()
+    return bool(
+        RELATIVE_TIME_RE.search(text)
+        or DAY_MONTH_RE.search(text)
+        or NUMERIC_DATE_RE.search(text)
+        or ENGLISH_DATE_RE.search(text)
+        or re.search(r"\b(?:hari\s+ini|today|kemarin|yesterday)\b", lower)
+    )
+
+
 def _normalise_item(
     raw: dict[str, Any],
     detected_at: str,
     now: datetime,
     *,
     publication_context: str = "",
+    allow_unverified: bool = False,
 ) -> dict[str, Any] | None:
+    """Normalisasi tautan langsung, dengan fallback kandidat tanpa marker waktu.
+
+    `allow_unverified` hanya digunakan sebagai lapisan terakhir di dashboard. Tautan
+    dengan marker tanggal lama tetap ditolak. Kandidat tanpa marker waktu diberi status
+    terpisah agar tidak keliru disebut berita hari ini dan tidak dapat dinotifikasi.
+    """
     title = _clean_text(raw.get("title") or raw.get("name") or raw.get("headline"), 300)
     url = _valid_url(raw.get("url") or raw.get("link") or raw.get("href"))
     if not _looks_like_direct_article(title, url):
@@ -516,11 +536,20 @@ def _normalise_item(
         or raw.get("time"),
         150,
     )
-    is_today, published_at = _is_today_from_text(
-        f"{explicit_published}\n{publication_context}", now
-    )
-    if not is_today:
-        return None
+    time_context = f"{explicit_published}\n{publication_context}"
+    is_today, published_at = _is_today_from_text(time_context, now)
+
+    if is_today:
+        time_status = "verified_today"
+        time_note = "Waktu publikasi terdeteksi untuk hari ini."
+    else:
+        # Jangan pernah meloloskan artikel kemarin atau artikel bertanggal lama. Hanya
+        # tautan tanpa marker waktu sama sekali yang boleh muncul sebagai kandidat audit.
+        if not allow_unverified or _has_publication_signal(time_context):
+            return None
+        time_status = "needs_time_verification"
+        published_at = "Waktu belum terdeteksi"
+        time_note = "Waktu publikasi belum ditemukan di respons pencarian. Periksa waktu pada sumber asli."
 
     # Postingan sosial individual tetap dipertahankan. Metrik seperti likes dan subscribers
     # hanya dihapus dari ringkasan, bukan dijadikan dasar penolakan konten.
@@ -538,29 +567,58 @@ def _normalise_item(
         "source_type": "social" if is_social else "publisher",
         "summary": description,
         "published_at": published_at or "Hari ini",
+        "time_status": time_status,
+        "time_note": time_note,
         "detected_at": detected_at,
         "category_key": category_key,
         "category": category,
     }
 
 
-def _walk_json(value: Any, detected_at: str, now: datetime) -> list[dict[str, Any]]:
+def _walk_json(
+    value: Any,
+    detected_at: str,
+    now: datetime,
+    *,
+    allow_unverified: bool = False,
+) -> list[dict[str, Any]]:
     """Dukung respons JSON tanpa mengunci ke satu skema Jina."""
     found: list[dict[str, Any]] = []
     if isinstance(value, dict):
-        item = _normalise_item(value, detected_at, now)
+        item = _normalise_item(value, detected_at, now, allow_unverified=allow_unverified)
         if item:
             found.append(item)
         for child in value.values():
-            found.extend(_walk_json(child, detected_at, now))
+            found.extend(
+                _walk_json(child, detected_at, now, allow_unverified=allow_unverified)
+            )
     elif isinstance(value, list):
         for child in value:
-            found.extend(_walk_json(child, detected_at, now))
+            found.extend(
+                _walk_json(child, detected_at, now, allow_unverified=allow_unverified)
+            )
     return found
 
 
-def _parse_markdown(text: str, detected_at: str, now: datetime) -> tuple[list[dict[str, Any]], int]:
-    """Ekstrak hanya heading artikel dan fallback link yang punya marker waktu hari ini."""
+def _context_near_link(text: str, start: int, end: int, following_limit: int = 900) -> str:
+    """Ambil konteks sempit di kiri dan kanan tautan agar marker waktu tidak mudah terlewat."""
+    before = text[max(0, start - 220):start]
+    after = text[end:min(len(text), end + following_limit)]
+    # Jika beberapa heading lain berada sebelum tautan, hanya simpan bagian setelah heading terakhir.
+    heading_cut = max(before.rfind("\n#"), before.rfind("\n##"))
+    if heading_cut >= 0:
+        before = before[heading_cut:]
+    return f"{before}\n{after}"
+
+
+def _parse_markdown(
+    text: str,
+    detected_at: str,
+    now: datetime,
+    *,
+    allow_unverified: bool = False,
+) -> tuple[list[dict[str, Any]], int]:
+    """Ekstrak heading dan tautan Markdown yang mengarah ke artikel langsung."""
     items: list[dict[str, Any]] = []
     candidates = 0
     occupied_spans: list[tuple[int, int]] = []
@@ -570,30 +628,39 @@ def _parse_markdown(text: str, detected_at: str, now: datetime) -> tuple[list[di
         candidates += 1
         title, url = match.groups()
         next_start = heading_matches[index + 1].start() if index + 1 < len(heading_matches) else len(text)
-        context = text[match.end() : min(next_start, match.end() + 900)]
+        after_context = text[match.end():min(next_start, match.end() + 1_100)]
+        # Gunakan hanya blok setelah heading ini. Konteks lintas heading dapat mencampur
+        # timestamp artikel berikutnya atau sebelumnya dengan artikel saat ini.
+        publication_context = after_context
         item = _normalise_item(
-            {"title": title, "url": url, "description": _extract_summary(context)},
+            {"title": title, "url": url, "description": _extract_summary(after_context)},
             detected_at,
             now,
-            publication_context=context,
+            publication_context=publication_context,
+            allow_unverified=allow_unverified,
         )
         if item:
             items.append(item)
         occupied_spans.append(match.span())
 
-    # Sebagian mesin pencari menuliskan tautan artikel tanpa heading. Tautan itu hanya
-    # diterima bila marker waktu hari ini berada dekat tautan tersebut.
+    # Sebagian respons menuliskan tautan artikel tanpa heading. Tautan tersebut tetap
+    # dapat diambil karena validasi URL dan konteks publikasi dijalankan terpisah.
     for match in LINK_RE.finditer(text):
         if any(start <= match.start() and match.end() <= end for start, end in occupied_spans):
             continue
         candidates += 1
         title, url = match.groups()
-        context = text[match.end() : match.end() + 500]
+        next_heading = text.find("\n#", match.end())
+        end_context = next_heading if next_heading >= 0 else min(len(text), match.end() + 650)
+        after_context = text[match.end():end_context]
+        # Tautan inline umumnya diikuti marker waktu. Hindari menggabungkan blok heading lain.
+        publication_context = after_context
         item = _normalise_item(
-            {"title": title, "url": url, "description": _extract_summary(context)},
+            {"title": title, "url": url, "description": _extract_summary(after_context)},
             detected_at,
             now,
-            publication_context=context,
+            publication_context=publication_context,
+            allow_unverified=allow_unverified,
         )
         if item:
             items.append(item)
@@ -621,8 +688,10 @@ def parse_search_response_details(
     payload: str | dict[str, Any] | list[Any],
     detected_at: str,
     limit: int = 20,
+    *,
+    allow_unverified_fallback: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    """Ubah respons Jina menjadi artikel atau konten sosial hari ini dengan URL langsung."""
+    """Ubah respons Jina menjadi artikel hari ini dan kandidat audit bila diperlukan."""
     now = _as_jakarta(detected_at)
     parsed: Any = payload
     if isinstance(payload, str):
@@ -639,37 +708,79 @@ def parse_search_response_details(
     else:
         items = []
 
+    verified_articles = _deduplicate(items, limit)
+    used_unverified_fallback = False
+    if not verified_articles and allow_unverified_fallback:
+        if parsed is not None:
+            fallback_items = _walk_json(parsed, detected_at, now, allow_unverified=True)
+        elif isinstance(payload, str):
+            fallback_items, fallback_candidates = _parse_markdown(
+                payload, detected_at, now, allow_unverified=True
+            )
+            raw_candidates = max(raw_candidates, fallback_candidates)
+        else:
+            fallback_items = []
+        items = fallback_items
+        used_unverified_fallback = bool(items)
+    else:
+        items = verified_articles
+
     articles = _deduplicate(items, limit)
+    verified_count = sum(item.get("time_status") == "verified_today" for item in articles)
     return articles, {
         "raw_candidates": raw_candidates,
-        "today_articles": len(articles),
+        "today_articles": verified_count,
+        "unverified_articles": sum(item.get("time_status") == "needs_time_verification" for item in articles),
+        "used_unverified_fallback": int(used_unverified_fallback),
     }
 
 
 def parse_search_response(
     payload: str | dict[str, Any] | list[Any], detected_at: str, limit: int = 20
 ) -> list[dict[str, Any]]:
-    """Kompatibilitas publik untuk parser artikel hari ini."""
+    """Kompatibilitas publik untuk parser artikel yang waktu publikasinya terverifikasi hari ini."""
     articles, _ = parse_search_response_details(payload, detected_at, limit)
     return articles
+
+
+def fallback_queries(primary_query: str, now: datetime | None = None) -> list[str]:
+    """Buat kueri cadangan yang lebih sederhana saat respons awal tidak menghasilkan artikel."""
+    now = _as_jakarta(now)
+    today = today_indonesia(now)
+    candidates = [
+        f"{primary_query.strip()} berita terbaru {today}",
+        f"Berita Indonesia terbaru hari ini {today}",
+        f"Berita teknologi edukasi otomotif ekonomi kesehatan olahraga terbaru Indonesia {today}",
+    ]
+    unique: list[str] = []
+    seen: set[str] = {primary_query.casefold().strip()}
+    for candidate in candidates:
+        candidate = _clean_text(candidate, 500)
+        key = candidate.casefold()
+        if candidate and key not in seen:
+            unique.append(candidate)
+            seen.add(key)
+    return unique
 
 
 def fetch_raw_markdown(
     api_key: str,
     query: str | None = None,
     timeout: int = 45,
+    *,
+    now: datetime | None = None,
 ) -> tuple[str, dict[str, str]]:
     """Ambil respons Markdown mentah dari Jina Search dengan mesin direct."""
     if not api_key:
         raise ValueError("JINA_API_KEY belum diatur.")
 
-    now = jakarta_now()
-    query = (query or default_query(now)).strip()
+    current_now = _as_jakarta(now)
+    query = (query or default_query(current_now)).strip()
     headers = {
         "Authorization": f"Bearer {api_key}",
         "X-Engine": "direct",
         "Accept": "text/markdown, text/plain;q=0.9, application/json;q=0.8",
-        "User-Agent": "news-monitor-streamlit/2.1",
+        "User-Agent": "news-monitor-streamlit/3.0",
     }
     response = requests.get(
         JINA_SEARCH_URL,
@@ -685,11 +796,83 @@ def fetch_raw_markdown(
 
     metadata = {
         "query": query,
-        "fetched_at": now.isoformat(),
-        "today_jakarta": today_indonesia(now),
+        "fetched_at": current_now.isoformat(),
+        "today_jakarta": today_indonesia(current_now),
         "content_type": response.headers.get("content-type", "tidak diketahui"),
     }
     return raw_markdown, metadata
+
+
+def _fetch_rounds(
+    api_key: str,
+    query: str | None,
+    max_results: int,
+    timeout: int,
+    *,
+    allow_unverified_fallback: bool,
+) -> tuple[list[dict[str, Any]], dict[str, str], str]:
+    """Jalankan pencarian utama lalu hingga tiga kueri cadangan bila hasil terverifikasi kosong."""
+    now = jakarta_now()
+    primary_query = (query or default_query(now)).strip()
+    queries = [primary_query, *fallback_queries(primary_query, now)]
+    raw_sections: list[str] = []
+    parsed_rounds: list[tuple[list[dict[str, Any]], dict[str, int]]] = []
+    metadata: dict[str, str] | None = None
+
+    for index, search_query in enumerate(queries):
+        raw_markdown, round_metadata = fetch_raw_markdown(
+            api_key, query=search_query, timeout=timeout, now=now
+        )
+        metadata = metadata or dict(round_metadata)
+        raw_sections.append(f"# Respons pencarian {index + 1}\n\n{raw_markdown}")
+        verified, stats = parse_search_response_details(
+            raw_markdown, round_metadata["fetched_at"], max_results
+        )
+        parsed_rounds.append((verified, stats))
+        if verified:
+            break
+
+    assert metadata is not None
+    verified_items: list[dict[str, Any]] = []
+    for items, _ in parsed_rounds:
+        verified_items.extend(items)
+    articles = _deduplicate(verified_items, max_results)
+
+    # Tampilan Streamlit tidak dibiarkan kosong apabila respons berisi tautan artikel
+    # langsung tanpa marker waktu. Status dan kartu memperjelas bahwa waktu belum diverifikasi.
+    used_unverified = False
+    if not articles and allow_unverified_fallback:
+        unverified_items: list[dict[str, Any]] = []
+        for raw_section in raw_sections:
+            # Hilangkan heading audit buatan sebelum mem-parsing ulang.
+            raw = raw_section.split("\n\n", 1)[1] if "\n\n" in raw_section else raw_section
+            items, _ = parse_search_response_details(
+                raw,
+                metadata["fetched_at"],
+                max_results,
+                allow_unverified_fallback=True,
+            )
+            unverified_items.extend(items)
+        articles = _deduplicate(unverified_items, max_results)
+        used_unverified = bool(articles)
+
+    raw_candidates = sum(stats["raw_candidates"] for _, stats in parsed_rounds)
+    verified_count = sum(item.get("time_status") == "verified_today" for item in articles)
+    unverified_count = sum(item.get("time_status") == "needs_time_verification" for item in articles)
+    metadata.update(
+        {
+            "result_count": str(len(articles)),
+            "raw_candidates": str(raw_candidates),
+            "today_articles": str(verified_count),
+            "unverified_articles": str(unverified_count),
+            "search_rounds": str(len(parsed_rounds)),
+            "fallback_search_used": "true" if len(parsed_rounds) > 1 else "false",
+            "result_mode": "verified_today" if verified_count else (
+                "needs_time_verification" if used_unverified else "none"
+            ),
+        }
+    )
+    return articles, metadata, "\n\n---\n\n".join(raw_sections)
 
 
 def fetch_news(
@@ -698,12 +881,18 @@ def fetch_news(
     max_results: int = 20,
     timeout: int = 45,
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    """Ambil artikel atau konten sosial yang memiliki marker publikasi hari ini."""
-    raw_markdown, metadata = fetch_raw_markdown(api_key, query=query, timeout=timeout)
-    articles, stats = parse_search_response_details(raw_markdown, metadata["fetched_at"], max_results)
-    metadata["result_count"] = str(len(articles))
-    metadata["raw_candidates"] = str(stats["raw_candidates"])
-    metadata["today_articles"] = str(stats["today_articles"])
+    """Ambil berita terverifikasi, atau kandidat artikel langsung bila marker waktu tidak tersedia.
+
+    Worker menyimpan kandidat fallback agar dashboard tidak kosong, tetapi worker harus
+    memfilter `time_status` sebelum mengirim notifikasi Telegram.
+    """
+    articles, metadata, _ = _fetch_rounds(
+        api_key,
+        query,
+        max_results,
+        timeout,
+        allow_unverified_fallback=True,
+    )
     return articles, metadata
 
 
@@ -713,10 +902,11 @@ def fetch_news_with_raw(
     max_results: int = 20,
     timeout: int = 45,
 ) -> tuple[list[dict[str, Any]], dict[str, str], str]:
-    """Varian Streamlit: artikel terfilter beserta respons Markdown mentah untuk audit."""
-    raw_markdown, metadata = fetch_raw_markdown(api_key, query=query, timeout=timeout)
-    articles, stats = parse_search_response_details(raw_markdown, metadata["fetched_at"], max_results)
-    metadata["result_count"] = str(len(articles))
-    metadata["raw_candidates"] = str(stats["raw_candidates"])
-    metadata["today_articles"] = str(stats["today_articles"])
-    return articles, metadata, raw_markdown
+    """Varian Streamlit dengan pencarian cadangan dan respons Markdown untuk audit."""
+    return _fetch_rounds(
+        api_key,
+        query,
+        max_results,
+        timeout,
+        allow_unverified_fallback=True,
+    )

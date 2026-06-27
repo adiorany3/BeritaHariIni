@@ -3,7 +3,13 @@ from __future__ import annotations
 import unittest
 from datetime import datetime
 
-from news_service import default_query, parse_search_response, today_indonesia
+from news_service import (
+    default_query,
+    fallback_queries,
+    parse_search_response,
+    parse_search_response_details,
+    today_indonesia,
+)
 
 
 DETECTED_AT = "2026-06-27T14:00:00+07:00"
@@ -103,6 +109,43 @@ Sabtu, 27 Juni 2026 10:00 WIB
         self.assertEqual(articles[1]["category"], "Otomotif")
         self.assertNotIn("Subscribers", articles[0]["summary"])
         self.assertNotIn("likes", articles[1]["summary"])
+
+
+    def test_unverified_direct_article_is_available_only_as_dashboard_fallback(self) -> None:
+        markdown = """
+### [Riset Teknologi Baru untuk Sekolah Indonesia](https://contoh.id/berita/riset-teknologi-sekolah)
+Ringkasan berita yang membahas inovasi pendidikan digital di Indonesia.
+"""
+        strict_articles = parse_search_response(markdown, DETECTED_AT)
+        self.assertEqual(strict_articles, [])
+
+        candidates, stats = parse_search_response_details(
+            markdown,
+            DETECTED_AT,
+            allow_unverified_fallback=True,
+        )
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["time_status"], "needs_time_verification")
+        self.assertEqual(candidates[0]["published_at"], "Waktu belum terdeteksi")
+        self.assertEqual(stats["unverified_articles"], 1)
+
+    def test_old_article_is_never_promoted_to_unverified_fallback(self) -> None:
+        markdown = """
+### [Artikel Lama](https://contoh.id/berita/artikel-lama-panjang)
+26 Juni 2026
+"""
+        candidates, _ = parse_search_response_details(
+            markdown,
+            DETECTED_AT,
+            allow_unverified_fallback=True,
+        )
+        self.assertEqual(candidates, [])
+
+    def test_fallback_queries_are_distinct_and_date_aware(self) -> None:
+        queries = fallback_queries("berita energi", datetime(2026, 6, 27, 10, 0))
+        self.assertGreaterEqual(len(queries), 2)
+        self.assertTrue(all("27 Juni 2026" in query for query in queries))
+        self.assertEqual(len(queries), len(set(queries)))
 
     def test_today_indonesia(self) -> None:
         now = datetime(2026, 6, 27, 10, 0)

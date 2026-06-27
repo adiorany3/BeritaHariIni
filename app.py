@@ -49,6 +49,8 @@ def normalise_article(article: dict[str, Any]) -> dict[str, str]:
     value.setdefault("category", "Lainnya")
     value.setdefault("source_type", "publisher")
     value.setdefault("published_at", "Hari ini")
+    value.setdefault("time_status", "verified_today")
+    value.setdefault("time_note", "")
     value.setdefault("summary", "")
     value.setdefault("source", "Sumber tidak diketahui")
     value.setdefault("url", "")
@@ -81,12 +83,19 @@ def render_article_card(article: dict[str, str]) -> None:
             source_line = f"{article['category']}  •  {article['source']}"
             if article.get("source_type") == "social":
                 source_line += "  •  Konten sosial"
+            if article.get("time_status") == "needs_time_verification":
+                source_line += "  •  Kandidat artikel"
             st.caption(source_line)
         with top_right:
-            st.caption(f"🕒 {article['published_at']}")
+            if article.get("time_status") == "needs_time_verification":
+                st.caption("🕒 Perlu cek waktu")
+            else:
+                st.caption(f"🕒 {article['published_at']}")
         st.markdown(f"**{article['title']}**")
         if article["summary"]:
             st.caption(article["summary"])
+        if article.get("time_status") == "needs_time_verification":
+            st.caption("Waktu publikasi belum ada pada respons pencarian. Periksa waktu di sumber asli.")
         if article["url"].startswith(("https://", "http://")):
             st.link_button("Buka artikel asli", article["url"], use_container_width=False)
 
@@ -122,8 +131,8 @@ def display_raw_response(raw_markdown: str, metadata: dict[str, str]) -> None:
         )
         col1, col2, col3 = st.columns(3)
         col1.metric("Kandidat tautan", metadata.get("raw_candidates", "-"))
-        col2.metric("Artikel hari ini", metadata.get("today_articles", "-"))
-        col3.metric("Baris respons", len(raw_markdown.splitlines()))
+        col2.metric("Waktu terverifikasi", metadata.get("today_articles", "-"))
+        col3.metric("Pencarian dijalankan", metadata.get("search_rounds", "1"))
         st.code(raw_markdown, language="markdown", wrap_lines=True)
         st.download_button(
             "Unduh respons Markdown",
@@ -135,8 +144,8 @@ def display_raw_response(raw_markdown: str, metadata: dict[str, str]) -> None:
 
 st.title("📰 Monitor Berita Hari Ini")
 st.caption(
-    "Artikel penerbit dan postingan sosial individual yang memiliki waktu publikasi hari ini, zona waktu Asia/Jakarta. "
-    "Tampilan memuat judul serta tautan langsung ke konten asli, tanpa gambar atau metrik engagement hasil scraping."
+    "Artikel penerbit dan postingan sosial individual dengan tautan langsung ke konten asli. "
+    "Artikel bertanda waktu hari ini diprioritaskan. Bila sumber tidak memuat marker waktu, aplikasi menampilkan kandidat terpisah untuk diverifikasi."
 )
 
 with st.sidebar:
@@ -160,7 +169,7 @@ metric_last.metric("Pembaruan terakhir", metadata.get("fetched_at", "Belum ada")
 with st.expander("Cari langsung dari Jina Search", expanded=True):
     st.caption(
         "Sistem membuang gambar, menu, profil sosial, kanal, angka followers, likes, subscribers, URL perantara, "
-        "artikel kemarin, dan tautan tanpa marker waktu. Hasil yang lolos mengarah langsung ke artikel atau postingan asli."
+        "dan artikel kemarin. Bila hasil pertama belum cukup, sistem mencoba kueri cadangan dan hanya menampilkan tautan langsung ke artikel atau postingan asli."
     )
     query = st.text_input("Kata kunci", value=default_query())
     if st.button("Cari berita terbaru hari ini", type="primary"):
@@ -176,10 +185,19 @@ with st.expander("Cari langsung dari Jina Search", expanded=True):
                 st.session_state["live_articles"] = live_articles
                 st.session_state["live_metadata"] = live_metadata
                 st.session_state["live_raw_markdown"] = raw_markdown
-                st.success(
-                    f"{len(live_articles)} artikel hari ini terdeteksi dari "
-                    f"{live_metadata.get('raw_candidates', '0')} kandidat tautan."
-                )
+                verified_count = live_metadata.get("today_articles", "0")
+                unverified_count = live_metadata.get("unverified_articles", "0")
+                rounds = live_metadata.get("search_rounds", "1")
+                if live_metadata.get("result_mode") == "needs_time_verification":
+                    st.warning(
+                        f"Menampilkan {unverified_count} kandidat artikel langsung dari {rounds} pencarian. "
+                        "Waktu publikasi belum terdeteksi, jadi periksa waktu di sumber asli."
+                    )
+                else:
+                    st.success(
+                        f"{verified_count} artikel dengan waktu hari ini terdeteksi dari "
+                        f"{live_metadata.get('raw_candidates', '0')} kandidat tautan melalui {rounds} pencarian."
+                    )
             except requests.RequestException as error:
                 st.error(f"Permintaan ke Jina gagal: {error}")
             except ValueError as error:
@@ -202,7 +220,10 @@ with st.expander("Cari langsung dari Jina Search", expanded=True):
         st.caption(f"Menampilkan {len(filtered_live)} artikel yang sesuai filter.")
         render_grouped_articles(filtered_live, "Tidak ada artikel yang sesuai filter kategori atau sumber.")
     elif raw_markdown:
-        st.info("Respons diterima, tetapi tidak ada tautan artikel hari ini yang memenuhi aturan penyaringan.")
+        st.warning(
+            "Pencarian cadangan sudah dijalankan, tetapi belum ditemukan halaman artikel langsung yang dapat diekstrak. "
+            "Gunakan kata kunci yang lebih spesifik atau periksa panel audit respons."
+        )
     if raw_markdown:
         display_raw_response(raw_markdown, live_metadata)
 

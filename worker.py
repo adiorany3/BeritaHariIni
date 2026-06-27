@@ -31,7 +31,9 @@ def main() -> None:
     sent_ids = {str(item) for item in sent.get("sent_ids", [])}
     candidates = [
         article for article in articles
-        if article["id"] not in sent_ids and article["id"] not in previous_ids
+        if article["id"] not in sent_ids
+        and article["id"] not in previous_ids
+        and article.get("time_status", "verified_today") == "verified_today"
     ]
     to_notify = candidates[:notification_limit]
 
@@ -45,7 +47,16 @@ def main() -> None:
         sent_ids.update(article["id"] for article in to_notify)
         LOGGER.info("Mengirim %d notifikasi baru ke Telegram.", len(to_notify))
     else:
-        LOGGER.info("Tidak ada artikel baru untuk dikirim.")
+        fallback_count = sum(
+            article.get("time_status") == "needs_time_verification" for article in articles
+        )
+        if fallback_count:
+            LOGGER.info(
+                "Menyimpan %d kandidat artikel tanpa marker waktu. Kandidat tidak dikirim ke Telegram.",
+                fallback_count,
+            )
+        else:
+            LOGGER.info("Tidak ada artikel baru untuk dikirim.")
 
     output = {
         "metadata": metadata,
