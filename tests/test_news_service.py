@@ -239,6 +239,48 @@ Ringkasan tentang teknologi Indonesia hari ini.
         self.assertEqual(metadata["search_rounds"], "2")
         self.assertEqual(len(articles), 1)
 
+    def test_specific_search_does_not_stop_at_static_rss_results(self) -> None:
+        rss_items = [
+            {
+                "id": "rss-ekonomi",
+                "title": "Pemerintah Bahas Pertumbuhan Ekonomi Nasional",
+                "url": "https://www.kompas.com/read/2026/06/27/120000/pertumbuhan-ekonomi-nasional",
+                "source": "kompas.com",
+                "source_type": "publisher",
+                "summary": "Rapat pemerintah membahas ekonomi nasional hari ini.",
+                "published_at": "2026-06-27T12:00:00",
+                "time_status": "verified_today",
+                "category_key": "ekonomi",
+                "category": "Ekonomi & Bisnis",
+            }
+        ]
+        jina_markdown = """
+### [Produsen Rilis Mobil Listrik Baru untuk Pasar Indonesia](https://oto.detik.com/mobil-listrik/2026/06/27/produsen-rilis-mobil-listrik-baru)
+27 Juni 2026
+Artikel membahas peluncuran mobil listrik baru dan rencana produksi kendaraan ramah lingkungan.
+"""
+        with patch.dict(os.environ, {"NEWS_MAX_SEARCH_ROUNDS": "1", "NEWS_ENABLE_RSS": "1"}, clear=False):
+            with patch("news_service.jakarta_now", return_value=datetime(2026, 6, 27, 14, 0)):
+                with patch("news_service.fetch_rss_articles", return_value=(rss_items, {
+                    "rss_enabled": "true",
+                    "rss_articles": "1",
+                    "rss_feeds_checked": "1",
+                }, "RSS generic")):
+                    with patch("news_service.fetch_raw_markdown", return_value=(jina_markdown, {
+                        "query": "mobil listrik",
+                        "fetched_at": DETECTED_AT,
+                        "today_jakarta": "27 Juni 2026",
+                        "content_type": "application/json",
+                        "response_format": "json_preferred",
+                    })) as mocked_fetch:
+                        articles, metadata = fetch_news("token", query="mobil listrik", max_results=20)
+        self.assertEqual(mocked_fetch.call_count, 1)
+        self.assertEqual(metadata["strict_query_relevance"], "true")
+        self.assertEqual(metadata["search_rounds"], "1")
+        self.assertEqual([item["title"] for item in articles], [
+            "Produsen Rilis Mobil Listrik Baru untuk Pasar Indonesia"
+        ])
+
     def test_fetch_raw_markdown_uses_fast_jina_headers(self) -> None:
         response = Mock()
         response.text = '{"data": []}'

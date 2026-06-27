@@ -8,7 +8,7 @@ Versi ini tidak lagi menampilkan hasil tersimpan dari workflow dan worker tidak 
 
 ## Fitur utama
 
-- **RSS penerbit resmi diprioritaskan** sebelum SERP umum. Ini mengurangi hasil kacau seperti YouTube, TikTok, Instagram, Facebook, Google News, halaman kanal, dan link agregator.
+- **RSS penerbit resmi diprioritaskan** sebelum SERP umum, tetapi sekarang tetap mengikuti keyword search. Untuk keyword spesifik, RSS umum yang tidak cocok akan dibuang dan aplikasi lanjut ke Jina fallback.
 - Query default tidak lagi menyebut platform sosial/video. Jina fallback memakai query `site:` ke domain berita, misalnya Kompas, Detik, CNN Indonesia, CNBC Indonesia, Tempo, Antara, Liputan6, Bisnis, Katadata, Kontan, Republika, Kumparan, Tirto, Suara, dan Okezone.
 - Respons Jina tetap memakai mode cepat:
   - `Accept: application/json`
@@ -33,6 +33,7 @@ Versi ini tidak lagi menampilkan hasil tersimpan dari workflow dan worker tidak 
   - kategori,
   - relevansi terhadap kata kunci,
   - sinyal non-berita/clickbait.
+- Untuk query spesifik di kolom search, relevansi sekarang menjadi **filter wajib**, bukan sekadar bonus skor. Ini mencegah hasil RSS umum tampil statis ketika pengguna mencari topik tertentu.
 - Sosial/video **diblokir secara default**. Jika benar-benar ingin menerima konten sosial individual, aktifkan `NEWS_ALLOW_SOCIAL=1`, tetapi ini tidak disarankan untuk mode berita bermutu.
 - Panel audit menampilkan sumber mentah RSS/Jina sebagai kode agar gambar, HTML, dan iklan tidak dimuat.
 
@@ -143,7 +144,7 @@ python -m unittest discover -s tests -v
 
 ## Catatan operasional
 
-- RSS resmi bisa kosong atau lambat pada sebagian sumber; karena itu timeout dibuat pendek dan Jina hanya dipakai sebagai fallback.
+- RSS resmi bisa kosong, lambat, atau terlalu umum pada sebagian sumber; karena itu timeout dibuat pendek dan Jina dipakai sebagai fallback ketika RSS belum relevan dengan keyword search.
 - Jina Search bukan mesin berita khusus. Tanpa `site:` dan negative filter, SERP dapat mengembalikan video, sosial, atau agregator. Versi ini sengaja mengunci fallback ke domain penerbit.
 - Tanggal relatif dihitung terhadap waktu Jakarta. Contoh: pukul `00:30`, artikel `2 jam yang lalu` dianggap berasal dari hari sebelumnya dan dikeluarkan.
 - Putar ulang token yang pernah dibagikan di chat, commit, screenshot, atau file publik.

@@ -264,6 +264,20 @@ NON_ARTICLE_CONTEXT_RE = re.compile(
 )
 MIN_HEADLINE_LENGTH = 8
 
+# Kata yang membuat kueri terlalu umum. Setelah kata-kata ini dibuang, sisa term
+# dipakai sebagai niat pencarian spesifik pengguna. Ini mencegah RSS umum
+# dianggap cocok hanya karena sama-sama berlabel "berita hari ini".
+GENERIC_QUERY_TERMS = {
+    "berita", "terbaru", "terkini", "hari", "ini", "today", "indonesia",
+    "artikel", "media", "nasional", "penerbit", "resmi", "langsung",
+    "update", "kabar", "headline", "headlines", "news", "terpercaya",
+}
+CATEGORY_SEED_TERMS = {
+    "teknologi", "edukasi", "otomotif", "ekonomi", "bisnis", "olahraga",
+    "kesehatan", "hiburan", "politik", "hukum", "kriminal", "internasional",
+    "lingkungan", "cuaca", "travel", "wisata", "kuliner", "lifestyle",
+}
+
 
 HEADING_LINK_RE = re.compile(
     r"(?m)^\s{0,3}#{2,6}\s+\[([^\]\n]{3,300})\]\((https?://[^\s)]+)\)"
@@ -963,6 +977,45 @@ def _query_terms(query: str) -> set[str]:
     }
 
 
+def _specific_query_terms(query: str) -> set[str]:
+    """Term niat pencarian yang benar-benar berasal dari input pengguna.
+
+    Kueri default berisi banyak kategori agar dashboard awal tetap luas. Untuk kolom
+    search, term seperti "berita", "hari ini", tanggal, dan daftar kategori default
+    tidak boleh membuat RSS umum terlihat relevan secara palsu.
+    """
+    terms = _query_terms(query)
+    specific = {
+        term for term in terms
+        if term not in GENERIC_QUERY_TERMS
+        and not re.fullmatch(r"20\d{2}", term)
+        and term not in {month.casefold() for month in MONTHS_ID}
+    }
+    # Bila kueri memuat terlalu banyak kategori sekaligus, itu biasanya query default
+    # dashboard, bukan pencarian spesifik dari pengguna.
+    if len(specific & CATEGORY_SEED_TERMS) >= 6:
+        return set()
+    return specific
+
+
+def _query_is_specific(query: str) -> bool:
+    return bool(_specific_query_terms(query))
+
+
+def _matches_query_intent(item: dict[str, Any], query: str) -> bool:
+    """True bila artikel sesuai niat search; kueri umum tidak difilter ketat."""
+    terms = _specific_query_terms(query)
+    if not terms:
+        return True
+    combined = " ".join(
+        str(item.get(key, ""))
+        for key in ("title", "summary", "url", "source", "category", "category_key")
+    ).casefold()
+    matched = {term for term in terms if term in combined}
+    required = 1 if len(terms) <= 2 else 2 if len(terms) <= 5 else 3
+    return len(matched) >= required
+
+
 def _path_article_score(url: str) -> tuple[int, list[str]]:
     parsed = urlparse(url)
     path = parsed.path.lower().strip("/")
@@ -1065,16 +1118,15 @@ def score_article_quality(
             score -= 5
             reasons.append("ringkasan kosong")
 
-    terms = _query_terms(query)
+    terms = _specific_query_terms(query)
     if terms:
         matched_terms = {term for term in terms if term in combined}
         if matched_terms:
-            score += min(14, 4 * len(matched_terms))
+            score += min(18, 5 * len(matched_terms))
             reasons.append("relevan dengan kueri")
-        # Kueri default luas sengaja tidak membuat hasil dihukum keras.
-        elif len(terms) <= 8:
-            score -= 12
-            reasons.append("kurang relevan dengan kueri")
+        else:
+            score -= 28
+            reasons.append("tidak sesuai kata kunci search")
 
     if category_key == "lainnya":
         score -= 4
@@ -1106,17 +1158,19 @@ def _apply_quality_scores(items: list[dict[str, Any]], query: str) -> list[dict[
 def _rank_and_filter(items: list[dict[str, Any]], query: str, limit: int) -> list[dict[str, Any]]:
     """Urutkan dan tahan hasil berkualitas rendah agar dashboard tidak sekadar daftar link."""
     scored = _apply_quality_scores(items, query)
-    filtered = [
-        item for item in scored
+    strict_relevance = _query_is_specific(query)
+    filtered = []
+    for item in scored:
+        if strict_relevance and not _matches_query_intent(item, query):
+            continue
         if (
             item.get("time_status") == "verified_today"
             and int(item.get("quality_score", 0)) >= MIN_VERIFIED_QUALITY_SCORE
-        )
-        or (
+        ) or (
             item.get("time_status") == "needs_time_verification"
             and int(item.get("quality_score", 0)) >= MIN_UNVERIFIED_QUALITY_SCORE
-        )
-    ]
+        ):
+            filtered.append(item)
     filtered.sort(
         key=lambda item: (
             item.get("time_status") == "verified_today",
@@ -1553,6 +1607,8 @@ def _fetch_rounds(
             "fallback_search_used": "true" if parsed_rounds else "false",
             "max_search_rounds": str(round_limit),
             "target_results_for_fast_stop": str(target_results),
+            "strict_query_relevance": "true" if _query_is_specific(primary_query) else "false",
+            "query_terms": ", ".join(sorted(_specific_query_terms(primary_query))),
             "result_mode": "verified_today" if verified_count else (
                 "needs_time_verification" if used_unverified else "none"
             ),

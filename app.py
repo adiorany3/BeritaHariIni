@@ -140,6 +140,8 @@ def display_raw_response(raw_markdown: str, metadata: dict[str, str]) -> None:
             "Panel ini hanya untuk audit parser. Isi ditampilkan sebagai teks kode, sehingga gambar, "
             "iklan, dan HTML dari sumber tidak dimuat."
         )
+        if metadata.get("strict_query_relevance") == "true":
+            st.caption(f"Mode relevansi ketat aktif untuk term: {metadata.get('query_terms', '-')}")
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Kandidat tautan", metadata.get("raw_candidates", "-"))
         col2.metric("Waktu terverifikasi", metadata.get("today_articles", "-"))
@@ -177,7 +179,8 @@ metric_right.metric("Maks. pencarian Jina", os.getenv("NEWS_MAX_SEARCH_ROUNDS", 
 
 with st.expander("Cari berita langsung", expanded=True):
     st.caption(
-        "Sistem mengecek RSS penerbit resmi terlebih dahulu, lalu memakai Jina Search hanya sebagai fallback source-scoped. "
+        "Masukkan topik/keyword. Untuk keyword spesifik, RSS hanya dipakai bila artikelnya cocok; "
+        "kalau tidak, sistem lanjut ke Jina Search yang dibatasi ke domain media berita. "
         "Sosial/video, Google News, gambar, menu, kanal, metrik engagement, dan artikel lama dibuang."
     )
     query = st.text_input("Kata kunci", value=default_query())
@@ -187,7 +190,7 @@ with st.expander("Cari berita langsung", expanded=True):
             st.error("Atur JINA_API_KEY di Streamlit Secrets untuk menjalankan pencarian langsung.")
         else:
             try:
-                with st.spinner("Mengambil dan menyaring artikel hari ini..."):
+                with st.spinner("Mengambil dan menyaring artikel sesuai kata kunci..."):
                     live_articles, live_metadata, raw_markdown = fetch_news_with_raw(
                         api_key, query=query, max_results=30
                     )
@@ -202,11 +205,18 @@ with st.expander("Cari berita langsung", expanded=True):
                         f"Menampilkan {unverified_count} kandidat artikel langsung dari {rounds} pencarian. "
                         "Waktu publikasi belum terdeteksi, jadi periksa waktu di sumber asli."
                     )
+                elif live_metadata.get("result_mode") == "none":
+                    st.warning(
+                        "Belum ada artikel yang cocok dengan kata kunci search dan terverifikasi hari ini. "
+                        f"RSS dicek: {live_metadata.get('rss_feeds_checked', '0')}, Jina: {rounds} pencarian. "
+                        f"Relevansi ketat: {live_metadata.get('strict_query_relevance', 'false')}."
+                    )
                 else:
                     st.success(
                         f"{verified_count} artikel dengan waktu hari ini terdeteksi dari "
                         f"{live_metadata.get('raw_candidates', '0')} kandidat tautan. "
-                        f"RSS dicek: {live_metadata.get('rss_feeds_checked', '0')}, Jina: {rounds} pencarian."
+                        f"RSS dicek: {live_metadata.get('rss_feeds_checked', '0')}, Jina: {rounds} pencarian. "
+                        f"Relevansi ketat: {live_metadata.get('strict_query_relevance', 'false')}."
                     )
             except requests.RequestException as error:
                 st.error(f"Permintaan ke Jina gagal: {error}")
@@ -231,7 +241,7 @@ with st.expander("Cari berita langsung", expanded=True):
         render_grouped_articles(filtered_live, "Tidak ada artikel yang sesuai filter kategori atau sumber.")
     elif raw_markdown:
         st.warning(
-            "Belum ditemukan artikel penerbit yang punya marker waktu hari ini. "
+            "Belum ditemukan artikel penerbit yang cocok dengan kata kunci dan punya marker waktu hari ini. "
             "Panel audit memperlihatkan RSS/pencarian yang dicek serta tautan yang ditolak."
         )
     if raw_markdown:
