@@ -116,6 +116,9 @@ def render_article_card(article: dict[str, str]) -> None:
             st.caption("Waktu publikasi belum ada pada respons pencarian. Periksa waktu di sumber asli.")
         if article.get("scrape_status") and not article.get("scraped_info"):
             st.caption(f"Info scrape: {article['scrape_status']}")
+        original_url = article.get("url", "").strip()
+        if original_url.startswith(("http://", "https://")):
+            st.link_button("Buka berita asli", original_url, use_container_width=False)
 
 
 def render_grouped_articles(articles: list[dict[str, str]], empty_message: str) -> None:
@@ -179,7 +182,7 @@ with st.sidebar:
     st.write("Maks. pencarian Jina/siklus:", os.getenv("NEWS_MAX_SEARCH_ROUNDS", "2"))
     st.write("Scrape isi artikel:", "✅ aktif" if os.getenv("NEWS_ENABLE_ARTICLE_SCRAPE", "1") not in {"0", "false", "False"} else "nonaktif")
     st.divider()
-    st.caption("Kartu berita menampilkan informasi utama hasil scrape; URL asli hanya disimpan untuk audit internal.")
+    st.caption("Kartu berita menampilkan informasi utama hasil scrape dan tetap menyediakan link asli untuk membaca sumber lengkap.")
 
 metric_left, metric_middle, metric_right, metric_extra = st.columns(4)
 metric_left.metric("Mode", "Pencarian langsung")
@@ -192,7 +195,7 @@ with st.expander("Cari berita langsung", expanded=True):
         "Masukkan topik/keyword. Untuk keyword spesifik, RSS hanya dipakai bila artikelnya cocok; "
         "kalau tidak, sistem lanjut ke Jina Search yang dibatasi ke domain media berita. "
         "Sosial/video, Google News, gambar, menu, kanal, metrik engagement, dan artikel lama dibuang. "
-        "Hasil akhir diperkaya dengan informasi utama dari isi artikel agar tidak perlu membuka website sumber."
+        "Hasil akhir diperkaya dengan informasi utama dari isi artikel, lalu link asli tetap tersedia bila ingin membaca lengkap."
     )
     query = st.text_input("Kata kunci", value=default_query())
     if st.button("Cari berita terbaru hari ini", type="primary"):

@@ -1,6 +1,6 @@
 # Monitor Berita Hari Ini dengan Streamlit
 
-Aplikasi ini mencari berita terbaru dengan pendekatan **RSS-first, Jina Search fallback, lalu scrape informasi artikel**. RSS penerbit resmi dicek lebih dulu karena biasanya lebih cepat, lebih bersih, dan langsung berisi URL artikel. Jika hasil RSS belum cukup, aplikasi baru memakai Jina Search (`s.jina.ai/?q=`) dengan kueri yang dibatasi ke domain media berita tepercaya dan diberi negative filter untuk sosial/video. Setelah artikel akhir dipilih, aplikasi memakai Jina Reader (`r.jina.ai/<url>`) untuk mengambil informasi utama dari isi artikel, sehingga pengguna tidak perlu membuka website sumber.
+Aplikasi ini mencari berita terbaru dengan pendekatan **RSS-first, Jina Search fallback, lalu scrape informasi artikel**. RSS penerbit resmi dicek lebih dulu karena biasanya lebih cepat, lebih bersih, dan langsung berisi URL artikel. Jika hasil RSS belum cukup, aplikasi baru memakai Jina Search (`s.jina.ai/?q=`) dengan kueri yang dibatasi ke domain media berita tepercaya dan diberi negative filter untuk sosial/video. Setelah artikel akhir dipilih, aplikasi memakai Jina Reader (`r.jina.ai/<url>`) untuk mengambil informasi utama dari isi artikel. Link asli tetap ditampilkan agar pengguna bisa membaca berita lengkap di sumbernya bila diperlukan.
 
 Tujuan versi ini: menghasilkan berita yang **bermutu, relevan, informatif, dan bukan sekadar kumpulan link acak**.
 
@@ -9,7 +9,7 @@ Versi ini tidak lagi menampilkan hasil tersimpan dari workflow dan worker tidak 
 ## Fitur utama
 
 - **RSS penerbit resmi diprioritaskan** sebelum SERP umum, tetapi sekarang tetap mengikuti keyword search. Untuk keyword spesifik, RSS umum yang tidak cocok akan dibuang dan aplikasi lanjut ke Jina fallback.
-- **Informasi utama artikel di-scrape otomatis** memakai Jina Reader setelah URL final lolos filter. Dashboard menampilkan inti isi artikel langsung di kartu berita, bukan tombol utama untuk membuka website.
+- **Informasi utama artikel di-scrape otomatis** memakai Jina Reader setelah URL final lolos filter. Dashboard menampilkan inti isi artikel langsung di kartu berita, sekaligus tetap menyediakan tombol **Buka berita asli**.
 - Query default tidak lagi menyebut platform sosial/video. Jina fallback memakai query `site:` ke domain berita, misalnya Kompas, Detik, CNN Indonesia, CNBC Indonesia, Tempo, Antara, Liputan6, Bisnis, Katadata, Kontan, Republika, Kumparan, Tirto, Suara, dan Okezone.
 - Respons Jina tetap memakai mode cepat:
   - `Accept: application/json`
@@ -37,7 +37,7 @@ Versi ini tidak lagi menampilkan hasil tersimpan dari workflow dan worker tidak 
 - Untuk query spesifik di kolom search, relevansi sekarang menjadi **filter wajib**, bukan sekadar bonus skor. Kueri multi-kata seperti `harga telur` diperlakukan sebagai **frasa/intent utuh**, bukan pencarian longgar `harga` OR `telur`. Ini mencegah hasil RSS umum atau hasil yang hanya cocok sebagian tampil statis ketika pengguna mencari topik tertentu.
 - Sosial/video **diblokir secara default**. Jika benar-benar ingin menerima konten sosial individual, aktifkan `NEWS_ALLOW_SOCIAL=1`, tetapi ini tidak disarankan untuk mode berita bermutu.
 - Panel audit menampilkan sumber mentah RSS/Jina sebagai kode agar gambar, HTML, dan iklan tidak dimuat.
-- Link asli tetap disimpan untuk audit internal, tetapi kartu berita tidak lagi menampilkan tombol **Buka artikel asli** sebagai aksi utama.
+- Link asli tetap ditampilkan pada kartu sebagai tombol **Buka berita asli**, sehingga ringkasan berfungsi sebagai preview dan pengguna tetap bisa membuka sumber lengkap.
 
 ## Struktur proyek
 
