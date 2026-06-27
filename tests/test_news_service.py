@@ -72,15 +72,21 @@ Kamis, 26 Jun 2026 23:50 WIB
         articles = parse_search_response(markdown, DETECTED_AT)
         self.assertEqual(len(articles), 1)
 
-    def test_social_profiles_and_non_news_program_pages_are_rejected(self) -> None:
+    def test_social_content_is_kept_but_profiles_and_engagement_are_ignored(self) -> None:
         markdown = """
 ### [Lainnya](https://www.instagram.com/contoh_akun/)
 27 Juni 2026
 432K Followers
 
-### [Berita Video Panjang di YouTube](https://www.youtube.com/watch?v=contoh)
+### [Video Teknologi AI untuk Siswa Indonesia](https://www.youtube.com/watch?v=contoh123)
 27 Juni 2026
 811K Subscribers
+2.4K likes
+
+### [Update Mobil Listrik Baru untuk Perkotaan](https://www.tiktok.com/@media/video/751234567890)
+Sabtu, 27 Juni 2026
+12K likes
+234 komentar
 
 ### [Kelana Kota](https://www.suarasurabaya.net/kelana-kota/)
 Sabtu, 27 Juni 2026
@@ -90,9 +96,13 @@ Program radio harian
 Sabtu, 27 Juni 2026 10:00 WIB
 """
         articles = parse_search_response(markdown, DETECTED_AT)
-        self.assertEqual(len(articles), 1)
-        self.assertEqual(articles[0]["source"], "contoh.id")
-        self.assertEqual(articles[0]["title"], "Pemerintah Rilis Program Teknologi Baru untuk Sekolah")
+        self.assertEqual(len(articles), 3)
+        self.assertEqual([item["source"] for item in articles], ["YouTube", "TikTok", "contoh.id"])
+        self.assertEqual([item["source_type"] for item in articles], ["social", "social", "publisher"])
+        self.assertEqual(articles[0]["category"], "Teknologi")
+        self.assertEqual(articles[1]["category"], "Otomotif")
+        self.assertNotIn("Subscribers", articles[0]["summary"])
+        self.assertNotIn("likes", articles[1]["summary"])
 
     def test_today_indonesia(self) -> None:
         now = datetime(2026, 6, 27, 10, 0)

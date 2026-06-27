@@ -1,7 +1,8 @@
 """Ambil, saring, kategorikan, dan normalisasi berita dari Jina Search.
 
-Modul ini sengaja hanya menghasilkan tautan artikel langsung. Tautan gambar,
-iklan, menu, halaman kategori, dan perantara seperti Google News dikeluarkan.
+Modul hanya menghasilkan tautan artikel penerbit atau tautan postingan sosial
+individual. Gambar, profil, metrik engagement, iklan, menu, halaman kategori,
+dan perantara seperti Google News dikeluarkan.
 """
 from __future__ import annotations
 
@@ -126,19 +127,38 @@ SOURCE_CATEGORY_HINTS: dict[str, str] = {
 IMAGE_SUFFIXES = (
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".avif", ".bmp", ".ico",
 )
-# Platform sosial, profil, dan perantara tidak dianggap sebagai artikel berita.
+# Mesin pencari dan URL utilitas tidak boleh muncul sebagai hasil berita.
+# Platform sosial tidak diblokir di sini karena postingan atau video individual dapat menjadi konten berita.
 BLOCKED_HOSTS = {
     "google.com", "news.google.com", "googleusercontent.com", "jina.ai", "s.jina.ai",
-    "t.me", "telegram.me", "instagram.com", "youtube.com", "youtu.be", "facebook.com",
-    "fb.com", "tiktok.com", "x.com", "twitter.com", "threads.net", "linkedin.com",
-    "pinterest.com", "reddit.com", "whatsapp.com",
+    "bit.ly", "tinyurl.com",
 }
+SOCIAL_SOURCE_LABELS = {
+    "instagram.com": "Instagram",
+    "youtube.com": "YouTube",
+    "youtu.be": "YouTube",
+    "tiktok.com": "TikTok",
+    "facebook.com": "Facebook",
+    "fb.com": "Facebook",
+    "x.com": "X",
+    "twitter.com": "X",
+    "threads.net": "Threads",
+    "linkedin.com": "LinkedIn",
+    "reddit.com": "Reddit",
+    "t.me": "Telegram",
+    "telegram.me": "Telegram",
+    "pinterest.com": "Pinterest",
+}
+SOCIAL_HOSTS = frozenset(SOCIAL_SOURCE_LABELS)
+
+# Navigasi dan profil tetap tidak dianggap artikel. Kata seperti watch, reels, dan shorts
+# sengaja tidak diblokir secara global karena dapat merupakan URL konten sosial individual.
 BLOCKED_URL_PARTS = {
     "search", "searchall", "tag", "tags", "topic", "topics", "kategori", "category",
     "categories", "indeks", "index", "login", "signin", "privacy", "kebijakan", "kontak",
     "contact", "about", "redaksi", "rss", "sitemap", "advert", "iklan", "subscribe",
     "channel", "channels", "user", "users", "profile", "profiles", "account", "accounts",
-    "reel", "reels", "shorts", "watch", "podcast", "program", "live", "playlist",
+    "settings", "explore", "hashtag", "trending",
 }
 BLOCKED_TITLE_PARTS = {
     "menu", "beranda", "home", "terpopuler", "lihat selengkapnya", "selengkapnya",
@@ -146,15 +166,19 @@ BLOCKED_TITLE_PARTS = {
     "kebijakan privasi", "kontak kami", "masuk", "login", "download sekarang",
     "kelana kota", "podcast", "siaran langsung", "live streaming", "profil", "profile",
 }
-SOCIAL_METADATA_RE = re.compile(
-    r"\b(?:\d+[\d.,]*[kmb]?\s*)?(?:followers?|pengikut|subscribers?|following)\b",
+# Metrik akun atau engagement bukan isi berita. Baris tersebut dihapus dari ringkasan.
+SOCIAL_ENGAGEMENT_RE = re.compile(
+    r"\b(?:\d+[\d.,]*[kmb]?\s*)?(?:followers?|pengikut|subscribers?|following|"
+    r"likes?|suka|komentar|comments?|views?|tayangan|dibaca|reposts?|shares?|bagikan)\b",
     re.IGNORECASE,
 )
 NON_ARTICLE_CONTEXT_RE = re.compile(
-    r"\b(?:akun resmi|official account|subscribe|ikuti kami|follow us|kanal youtube|channel youtube)\b",
+    r"\b(?:akun resmi|official account|subscribe|ikuti kami|follow us|kanal youtube|"
+    r"channel youtube|halaman profil|profile page)\b",
     re.IGNORECASE,
 )
 MIN_HEADLINE_LENGTH = 8
+
 
 HEADING_LINK_RE = re.compile(
     r"(?m)^\s{0,3}#{2,6}\s+\[([^\]\n]{3,300})\]\((https?://[^\s)]+)\)"
@@ -211,7 +235,7 @@ def default_query(now: datetime | None = None) -> str:
     """Buat kueri luas dengan konteks tanggal Jakarta dan kategori utama."""
     return (
         f"Berita Indonesia terbaru hari ini {today_indonesia(now)} "
-        "teknologi edukasi otomotif ekonomi olahraga kesehatan"
+        "teknologi edukasi otomotif ekonomi olahraga kesehatan konten berita YouTube Instagram TikTok X"
     )
 
 
@@ -247,8 +271,57 @@ def _is_blocked_host(host: str) -> bool:
     return any(host == blocked or host.endswith(f".{blocked}") for blocked in BLOCKED_HOSTS)
 
 
+def _is_social_host(host: str) -> bool:
+    return any(host == social or host.endswith(f".{social}") for social in SOCIAL_HOSTS)
+
+
+def _social_label(host: str) -> str:
+    for domain, label in SOCIAL_SOURCE_LABELS.items():
+        if host == domain or host.endswith(f".{domain}"):
+            return label
+    return host
+
+
+def _is_social_content_url(url: str) -> bool:
+    """Terima postingan atau video individual, tolak halaman profil dan kanal sosial."""
+    parsed = urlparse(url)
+    host = _host(url)
+    path = parsed.path.lower().rstrip("/")
+    segments = [part for part in path.split("/") if part]
+    query = parsed.query.lower()
+
+    if host.endswith("instagram.com"):
+        return bool(re.match(r"^/(?:p|reel|reels|tv)/[^/]+", path))
+    if host.endswith(("youtube.com", "youtu.be")):
+        return (
+            (path == "/watch" and "v=" in query)
+            or bool(re.match(r"^/(?:shorts|live|embed)/[^/]+", path))
+            or (host.endswith("youtu.be") and len(segments) == 1 and len(segments[0]) >= 6)
+        )
+    if host.endswith("tiktok.com"):
+        return bool(re.match(r"^/(?:@[^/]+/(?:video|photo)|video)/[^/]+", path))
+    if host.endswith(("x.com", "twitter.com")):
+        return bool(re.match(r"^/[^/]+/status/\d+", path))
+    if host.endswith("threads.net"):
+        return bool(re.match(r"^/(?:@[^/]+/(?:post|t)|t)/[^/]+", path))
+    if host.endswith(("facebook.com", "fb.com")):
+        return (
+            bool(re.match(r"^/(?:reel|watch|share/(?:v|r)|[^/]+/posts)/", path))
+            or (path == "/watch" and "v=" in query)
+        )
+    if host.endswith("linkedin.com"):
+        return path.startswith("/posts/") or path.startswith("/feed/update/")
+    if host.endswith("reddit.com"):
+        return bool(re.match(r"^/r/[^/]+/comments/[^/]+", path))
+    if host.endswith(("t.me", "telegram.me")):
+        return len(segments) >= 2 and bool(re.fullmatch(r"\d+", segments[-1]))
+    if host.endswith("pinterest.com"):
+        return bool(re.match(r"^/pin/\d+", path))
+    return False
+
+
 def _looks_like_direct_article(title: str, url: str) -> bool:
-    """Terima hanya URL artikel penerbit, bukan sosial, profil, kanal, atau navigasi."""
+    """Terima artikel penerbit atau konten sosial individual, bukan gambar maupun halaman navigasi."""
     title = _clean_text(title, 300)
     if len(title) < MIN_HEADLINE_LENGTH or not url:
         return False
@@ -267,6 +340,10 @@ def _looks_like_direct_article(title: str, url: str) -> bool:
         return False
     if path.endswith(IMAGE_SUFFIXES) or "/images/" in path or "/image/" in path:
         return False
+
+    if _is_social_host(host):
+        return _is_social_content_url(url)
+
     segments = [segment for segment in path.split("/") if segment]
     if not segments:
         return False
@@ -284,9 +361,22 @@ def _looks_like_direct_article(title: str, url: str) -> bool:
 
 
 def _looks_like_social_or_profile_context(*values: str) -> bool:
-    """Tolak kandidat yang membawa metadata akun, pengikut, atau pelanggan."""
+    """Tolak metadata akun untuk hasil non-sosial. Postingan sosial disaring menurut URL kontennya."""
     context = " ".join(_clean_text(value, 1200) for value in values if value)
-    return bool(SOCIAL_METADATA_RE.search(context) or NON_ARTICLE_CONTEXT_RE.search(context))
+    return bool(SOCIAL_ENGAGEMENT_RE.search(context) or NON_ARTICLE_CONTEXT_RE.search(context))
+
+
+def _strip_social_metrics(value: str) -> str:
+    """Hapus metrik akun atau engagement tanpa menghapus isi utama postingan."""
+    retained: list[str] = []
+    for line in str(value or "").splitlines():
+        compact = _clean_text(line, 600)
+        if not compact:
+            continue
+        if SOCIAL_ENGAGEMENT_RE.search(compact) or NON_ARTICLE_CONTEXT_RE.search(compact):
+            continue
+        retained.append(compact)
+    return _clean_text(" ".join(retained), 600)
 
 
 def _contains_keyword(text: str, keyword: str) -> bool:
@@ -376,7 +466,7 @@ def _is_today_from_text(value: str, now: datetime) -> tuple[bool, str]:
 
 
 def _extract_summary(context: str) -> str:
-    """Ambil teks kecil di sekitar artikel, tanpa gambar atau deretan tautan navigasi."""
+    """Ambil teks di sekitar artikel dan buang gambar, navigasi, serta metrik sosial."""
     useful: list[str] = []
     for line in context.splitlines():
         line = line.strip()
@@ -386,6 +476,8 @@ def _extract_summary(context: str) -> str:
             continue
         # Hapus tautan Markdown agar menu dan URL panjang tidak menjadi ringkasan.
         line = re.sub(r"!?\[[^\]]+\]\([^)]*\)", "", line).strip(" -|:·")
+        if SOCIAL_ENGAGEMENT_RE.search(line) or NON_ARTICLE_CONTEXT_RE.search(line):
+            continue
         if len(line) < 35 or line.lower() in BLOCKED_TITLE_PARTS:
             continue
         useful.append(line)
@@ -406,6 +498,8 @@ def _normalise_item(
     if not _looks_like_direct_article(title, url):
         return None
 
+    host = _host(url)
+    is_social = _is_social_host(host)
     description = _clean_text(
         raw.get("description")
         or raw.get("snippet")
@@ -427,7 +521,12 @@ def _normalise_item(
     )
     if not is_today:
         return None
-    if _looks_like_social_or_profile_context(title, description, publication_context, url):
+
+    # Postingan sosial individual tetap dipertahankan. Metrik seperti likes dan subscribers
+    # hanya dihapus dari ringkasan, bukan dijadikan dasar penolakan konten.
+    if is_social:
+        description = _strip_social_metrics(description)
+    elif _looks_like_social_or_profile_context(title, description, publication_context, url):
         return None
 
     category_key, category = classify_category(title, description, url)
@@ -435,7 +534,8 @@ def _normalise_item(
         "id": _article_id(url, title),
         "title": title,
         "url": url,
-        "source": _host(url),
+        "source": _social_label(host) if is_social else host,
+        "source_type": "social" if is_social else "publisher",
         "summary": description,
         "published_at": published_at or "Hari ini",
         "detected_at": detected_at,
@@ -522,7 +622,7 @@ def parse_search_response_details(
     detected_at: str,
     limit: int = 20,
 ) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    """Ubah respons Jina menjadi artikel langsung yang dipublikasikan hari ini saja."""
+    """Ubah respons Jina menjadi artikel atau konten sosial hari ini dengan URL langsung."""
     now = _as_jakarta(detected_at)
     parsed: Any = payload
     if isinstance(payload, str):
@@ -598,7 +698,7 @@ def fetch_news(
     max_results: int = 20,
     timeout: int = 45,
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    """Ambil artikel langsung yang memiliki marker publikasi hari ini."""
+    """Ambil artikel atau konten sosial yang memiliki marker publikasi hari ini."""
     raw_markdown, metadata = fetch_raw_markdown(api_key, query=query, timeout=timeout)
     articles, stats = parse_search_response_details(raw_markdown, metadata["fetched_at"], max_results)
     metadata["result_count"] = str(len(articles))

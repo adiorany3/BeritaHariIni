@@ -16,17 +16,18 @@ def build_message(articles: list[dict[str, Any]], date_label: str) -> str:
         title = _clean(article.get("title", "Tanpa judul"), 180)
         category = _clean(article.get("category", "Lainnya"), 60)
         source = _clean(article.get("source", "Sumber tidak diketahui"), 80)
+        source_type = _clean(article.get("source_type", "publisher"), 30)
         published_at = _clean(article.get("published_at", "Hari ini"), 80)
         url = _clean(article.get("url", ""), 500)
         lines.extend(
             [
                 f"{index}. {title}",
-                f"Kategori: {category} | Sumber: {source} | Waktu: {published_at}",
+                f"Kategori: {category} | Sumber: {source}{' (Konten sosial)' if source_type == 'social' else ''} | Waktu: {published_at}",
                 url,
                 "",
             ]
         )
-    lines.append("Tautan mengarah ke artikel asli. Periksa sumber sebelum membagikan atau mengambil keputusan.")
+    lines.append("Tautan mengarah ke artikel atau postingan asli. Periksa sumber sebelum membagikan atau mengambil keputusan.")
     return "\n".join(lines)
 
 

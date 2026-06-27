@@ -47,6 +47,7 @@ def normalise_article(article: dict[str, Any]) -> dict[str, str]:
     value = dict(article)
     value.setdefault("category_key", "lainnya")
     value.setdefault("category", "Lainnya")
+    value.setdefault("source_type", "publisher")
     value.setdefault("published_at", "Hari ini")
     value.setdefault("summary", "")
     value.setdefault("source", "Sumber tidak diketahui")
@@ -77,7 +78,10 @@ def render_article_card(article: dict[str, str]) -> None:
     with st.container(border=True):
         top_left, top_right = st.columns([4, 1])
         with top_left:
-            st.caption(f"{article['category']}  •  {article['source']}")
+            source_line = f"{article['category']}  •  {article['source']}"
+            if article.get("source_type") == "social":
+                source_line += "  •  Konten sosial"
+            st.caption(source_line)
         with top_right:
             st.caption(f"🕒 {article['published_at']}")
         st.markdown(f"**{article['title']}**")
@@ -131,8 +135,8 @@ def display_raw_response(raw_markdown: str, metadata: dict[str, str]) -> None:
 
 st.title("📰 Monitor Berita Hari Ini")
 st.caption(
-    "Hanya artikel dengan waktu publikasi yang terdeteksi pada hari ini, zona waktu Asia/Jakarta. "
-    "Tampilan memuat judul dan tautan langsung ke artikel asli, tanpa gambar hasil scraping."
+    "Artikel penerbit dan postingan sosial individual yang memiliki waktu publikasi hari ini, zona waktu Asia/Jakarta. "
+    "Tampilan memuat judul serta tautan langsung ke konten asli, tanpa gambar atau metrik engagement hasil scraping."
 )
 
 with st.sidebar:
@@ -155,8 +159,8 @@ metric_last.metric("Pembaruan terakhir", metadata.get("fetched_at", "Belum ada")
 
 with st.expander("Cari langsung dari Jina Search", expanded=True):
     st.caption(
-        "Sistem akan membuang gambar, menu, halaman kategori, URL perantara, artikel kemarin, dan "
-        "tautan tanpa marker waktu. Hasil yang lolos diarahkan langsung ke situs penerbit."
+        "Sistem membuang gambar, menu, profil sosial, kanal, angka followers, likes, subscribers, URL perantara, "
+        "artikel kemarin, dan tautan tanpa marker waktu. Hasil yang lolos mengarah langsung ke artikel atau postingan asli."
     )
     query = st.text_input("Kata kunci", value=default_query())
     if st.button("Cari berita terbaru hari ini", type="primary"):

@@ -6,12 +6,13 @@ Aplikasi ini mencari berita melalui Jina Search dengan `X-Engine: direct`, menya
 
 - Query otomatis menambahkan tanggal Jakarta dan kategori utama: teknologi, edukasi, otomotif, ekonomi, olahraga, serta kesehatan.
 - Hanya menyimpan artikel yang memiliki marker publikasi hari ini, misalnya `15 menit yang lalu`, `2 jam yang lalu`, `Hari ini`, atau tanggal yang sama dengan tanggal Jakarta.
-- Menolak artikel kemarin, tautan tanpa waktu, gambar, ikon, iklan, menu, halaman kategori, halaman pencarian, URL perantara seperti Google News, serta akun Instagram, YouTube, TikTok, Facebook, X, profil, kanal, program, pengikut, dan subscriber.
-- Semua tombol **Buka artikel asli** memakai URL langsung dari situs penerbit. Aplikasi tidak menampilkan gambar hasil scraping maupun tautan media sosial.
+- Menolak artikel kemarin, tautan tanpa waktu, gambar, ikon, iklan, menu, halaman kategori, halaman pencarian, URL perantara seperti Google News, serta profil, kanal, program, pengikut, subscriber, likes, komentar, dan metrik akun.
+- Menerima konten sosial individual yang memiliki URL postingan atau video langsung, misalnya Instagram Post/Reel, YouTube Watch/Shorts, TikTok Video, X Post, Threads Post, Facebook Reel/Post, LinkedIn Post, Reddit Post, dan Telegram Post.
+- Semua tombol **Buka artikel asli** memakai URL langsung ke artikel penerbit atau postingan sosial individual. Aplikasi tidak menampilkan gambar hasil scraping maupun metrik engagement.
 - Kategori: Teknologi, Edukasi, Otomotif, Ekonomi & Bisnis, Olahraga, Kesehatan, Hiburan, Politik, Hukum & Kriminal, Internasional, Gaya Hidup & Perjalanan, Lingkungan & Cuaca, dan Lainnya.
 - Filter kategori serta judul atau sumber tersedia untuk hasil pencarian langsung dan hasil GitHub Actions.
 - Respons Markdown mentah Jina tersedia pada panel audit, tetapi ditampilkan sebagai kode agar gambar, HTML, dan iklan tidak dimuat.
-- Telegram hanya menerima artikel langsung yang belum pernah dikirim. Pesan memuat kategori, sumber, waktu, dan URL asli.
+- Telegram hanya menerima artikel atau konten sosial langsung yang belum pernah dikirim. Pesan memuat kategori, sumber, waktu, dan URL asli tanpa metrik engagement.
 - Token serta chat ID tidak tersimpan dalam source code.
 
 ## Struktur proyek
