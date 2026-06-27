@@ -30,6 +30,10 @@ MAX_TELEGRAM_MESSAGE_LENGTH = 4096
 SAFE_MESSAGE_LENGTH = 3800
 DEFAULT_NEWS_LIMIT = 5
 DEFAULT_POLL_TIMEOUT = 30
+# Fallback khusus project ini agar link TXT bersih tetap muncul di Telegram
+# walaupun secret GitHub Actions belum diisi. Tetap disarankan mengisi
+# STREAMLIT_APP_URL/TELEGRAM_TEXT_READER_APP_URL di Secrets.
+DEFAULT_TEXT_READER_APP_URL = "https://beritaterbaru.streamlit.app"
 BASE_DIR = Path(__file__).resolve().parent
 TELEGRAM_UPDATE_STATE_PATH = BASE_DIR / "data" / "telegram_updates_state.json"
 MAX_STORED_TELEGRAM_UPDATES = 600
@@ -104,18 +108,39 @@ def _compact(value: Any, limit: int = 520) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+def _normalise_app_base_url(value: str) -> str:
+    """Rapikan URL app untuk link TXT bersih Telegram."""
+    text = (value or "").strip().strip('"\'')
+    if not text:
+        return ""
+    if not text.startswith(("http://", "https://")):
+        text = f"https://{text}"
+    return text.rstrip("/")
+
+
 def _telegram_text_reader_app_url() -> str:
     """URL publik aplikasi untuk link TXT bersih di Telegram.
 
     Jangan fallback ke `r.jina.ai` mentah untuk tombol TXT bersih, karena link
     langsung tersebut tidak membawa header pembersih dan masih bisa menampilkan
-    markdown gambar seperti `![Image ...]`.
+    markdown gambar seperti `![Image ...]`. GitHub Actions tidak bisa membaca
+    Streamlit Secrets, jadi fungsi ini menerima banyak nama secret/variable dan
+    memakai default project bila semuanya kosong.
     """
-    return (
-        get_secret("TELEGRAM_TEXT_READER_APP_URL", "")
-        or get_secret("STREAMLIT_APP_URL", "")
-        or get_secret("PUBLIC_APP_URL", "")
-    ).strip()
+    candidates = (
+        get_secret("TELEGRAM_TEXT_READER_APP_URL", ""),
+        get_secret("TEXT_READER_APP_URL", ""),
+        get_secret("STREAMLIT_APP_URL", ""),
+        get_secret("PUBLIC_APP_URL", ""),
+        get_secret("APP_URL", ""),
+        get_secret("STREAMLIT_URL", ""),
+        DEFAULT_TEXT_READER_APP_URL,
+    )
+    for candidate in candidates:
+        normalised = _normalise_app_base_url(candidate)
+        if normalised:
+            return normalised
+    return ""
 
 
 def format_article(article: dict[str, Any], index: int) -> str:

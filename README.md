@@ -178,7 +178,7 @@ Secret GitHub yang wajib dibuat:
 | Secret | Isi |
 | --- | --- |
 | `JINA_API_KEY` | API key Jina Reader/Search. |
-| `STREAMLIT_APP_URL` | URL publik app Streamlit, contoh `https://nama-app.streamlit.app`. Dipakai supaya link Telegram membuka halaman TXT internal yang menghapus `![Image ...]`. |
+| `STREAMLIT_APP_URL` | URL publik app Streamlit, contoh `https://beritaterbaru.streamlit.app`. Dipakai supaya link Telegram membuka halaman TXT internal yang menghapus `![Image ...]`. |
 | `TELEGRAM_TEXT_READER_APP_URL` | Opsional. URL pembaca TXT khusus untuk Telegram. Jika kosong, Telegram memakai `STREAMLIT_APP_URL`. |
 | `TELEGRAM_BOT_TOKEN` | Token bot dari @BotFather. |
 | `TELEGRAM_BROADCAST_CHAT_IDS` | Satu atau beberapa chat ID tujuan, contoh `123456789` atau `123456789,-100987654321`. |
@@ -410,3 +410,8 @@ python -m unittest discover -s tests -v
 - Telegram Bot interaktif memakai long polling. Pastikan proses `python telegram_bot.py` tetap berjalan di server/VPS/hosting yang mendukung worker background. Untuk broadcast pagi, GitHub Actions cukup menjalankan `worker.py` sesuai jadwal dan tidak perlu proses always-on.
 - Tanggal relatif dihitung terhadap waktu Jakarta. Contoh: pukul `00:30`, artikel `2 jam yang lalu` dianggap berasal dari hari sebelumnya dan dikeluarkan.
 - Putar ulang token yang pernah dibagikan di chat, commit, screenshot, atau file publik.
+
+
+### Catatan link TXT bersih di Telegram
+
+Jika Telegram dikirim dari **GitHub Actions**, pastikan URL app juga ada di **GitHub Actions Secrets/Variables** (`STREAMLIT_APP_URL` atau `TELEGRAM_TEXT_READER_APP_URL`). Secrets Streamlit Cloud hanya terbaca oleh aplikasi Streamlit, bukan oleh runner GitHub. Versi ini juga menyediakan fallback default ke `https://beritaterbaru.streamlit.app` agar link **Buka teks bersih (TXT)** tetap muncul.

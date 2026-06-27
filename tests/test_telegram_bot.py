@@ -48,7 +48,8 @@ class TelegramBotTests(unittest.TestCase):
         text = "\n".join(messages)
         self.assertIn("Harga Telur Ayam Naik", text)
         self.assertIn("Rp32.000", text)
-        self.assertIn("Link TXT bersih belum aktif", text)
+        self.assertIn("Buka teks bersih (TXT)", text)
+        self.assertIn("https://beritaterbaru.streamlit.app?reader=https%3A%2F%2Fwww.kompas.com%2Fread%2F2026%2F06%2F27%2Fharga-telur", text)
         self.assertNotIn("https://r.jina.ai/https://www.kompas.com/read/2026/06/27/harga-telur", text)
         self.assertIn("Buka berita asli", text)
         self.assertIn("https://www.kompas.com/read/2026/06/27/harga-telur", text)
@@ -101,6 +102,26 @@ class TelegramBotTests(unittest.TestCase):
         self.assertNotIn("https://dashboard.example.com?reader=", text)
         self.assertNotIn("https://r.jina.ai/", text)
 
+
+    def test_build_news_messages_accepts_app_url_alias_without_scheme(self) -> None:
+        with patch.dict(os.environ, {"APP_URL": "beritaterbaru.streamlit.app/"}, clear=False):
+            messages = build_news_messages(
+                "ai gambar",
+                [
+                    {
+                        "title": "Startup AI Gambar Rilis Fitur Baru",
+                        "scraped_info": "Perusahaan merilis fitur baru untuk membuat gambar dari teks.",
+                        "source": "contoh.id",
+                        "published_at": "2026-06-27T12:00:00",
+                        "url": "https://contoh.id/ai-gambar",
+                    }
+                ],
+                {"article_scrape_success": "1", "article_scrape_attempted": "1"},
+            )
+        text = "\n".join(messages)
+        self.assertIn("https://beritaterbaru.streamlit.app?reader=https%3A%2F%2Fcontoh.id%2Fai-gambar", text)
+        self.assertNotIn("https://beritaterbaru.streamlit.app/?reader=", text)
+
     def test_build_news_messages_uses_scraped_content_only_not_serp_summary(self) -> None:
         messages = build_news_messages(
             "ai gambar",
@@ -119,7 +140,8 @@ class TelegramBotTests(unittest.TestCase):
         text = "\n".join(messages)
         self.assertNotIn("Deskripsi dari SERP", text)
         self.assertIn("Konten artikel belum berhasil di-scrape", text)
-        self.assertIn("Link TXT bersih belum aktif", text)
+        self.assertIn("Buka teks bersih (TXT)", text)
+        self.assertIn("https://beritaterbaru.streamlit.app?reader=https%3A%2F%2Fcontoh.id%2Fai-gambar", text)
         self.assertIn("Buka berita asli", text)
 
 
