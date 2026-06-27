@@ -8,6 +8,7 @@ from news_service import (
     fallback_queries,
     parse_search_response,
     parse_search_response_details,
+    score_article_quality,
     today_indonesia,
 )
 
@@ -140,6 +141,52 @@ Ringkasan berita yang membahas inovasi pendidikan digital di Indonesia.
             allow_unverified_fallback=True,
         )
         self.assertEqual(candidates, [])
+
+
+    def test_json_search_response_uses_timestamp_and_content_context(self) -> None:
+        payload = {
+            "code": 200,
+            "data": [
+                {
+                    "title": "Kompas Rilis Laporan Teknologi Baru untuk Sekolah",
+                    "url": "https://tekno.kompas.com/read/2026/06/27/120000/teknologi-baru-untuk-sekolah",
+                    "content": "Artikel membahas teknologi pendidikan digital di Indonesia.",
+                    "timestamp": "2026-06-27T12:00:00+07:00",
+                }
+            ],
+        }
+        articles = parse_search_response(payload, DETECTED_AT)
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(articles[0]["source"], "tekno.kompas.com")
+        self.assertEqual(articles[0]["published_at"], "2026-06-27T12:00:00")
+        self.assertGreaterEqual(articles[0]["quality_score"], 70)
+
+    def test_relative_days_are_not_treated_as_seconds(self) -> None:
+        markdown = """
+### [Artikel Satu Hari Lalu](https://contoh.id/berita/artikel-satu-hari-lalu)
+1 hari yang lalu
+"""
+        articles = parse_search_response(markdown, DETECTED_AT)
+        self.assertEqual(articles, [])
+
+    def test_quality_score_rewards_editorial_relevance_and_penalises_generic_links(self) -> None:
+        good_score, _ = score_article_quality(
+            title="Pemerintah Rilis Program Teknologi Baru untuk Sekolah Indonesia",
+            summary="Program ini membahas pembelajaran digital, sekolah, guru, dan siswa di Indonesia.",
+            url="https://tekno.kompas.com/read/2026/06/27/120000/program-teknologi-baru-sekolah",
+            time_status="verified_today",
+            category_key="teknologi",
+            query="berita teknologi sekolah Indonesia",
+        )
+        bad_score, _ = score_article_quality(
+            title="Terpopuler Hari Ini",
+            summary="",
+            url="https://contoh.id/news",
+            time_status="needs_time_verification",
+            category_key="lainnya",
+            query="berita teknologi sekolah Indonesia",
+        )
+        self.assertGreater(good_score, bad_score + 40)
 
     def test_fallback_queries_are_distinct_and_date_aware(self) -> None:
         queries = fallback_queries("berita energi", datetime(2026, 6, 27, 10, 0))

@@ -11,7 +11,7 @@ from hashlib import sha256
 import json
 import re
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from zoneinfo import ZoneInfo
 
 import requests
@@ -127,6 +127,11 @@ SOURCE_CATEGORY_HINTS: dict[str, str] = {
 IMAGE_SUFFIXES = (
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".avif", ".bmp", ".ico",
 )
+TRACKING_QUERY_PREFIXES = ("utm_",)
+TRACKING_QUERY_KEYS = {
+    "fbclid", "gclid", "dclid", "mc_cid", "mc_eid", "igshid", "si", "spm",
+    "ocid", "cmpid", "ito", "ref", "ref_src", "feature", "app", "from",
+}
 # Mesin pencari dan URL utilitas tidak boleh muncul sebagai hasil berita.
 # Platform sosial tidak diblokir di sini karena postingan atau video individual dapat menjadi konten berita.
 BLOCKED_HOSTS = {
@@ -151,6 +156,44 @@ SOCIAL_SOURCE_LABELS = {
 }
 SOCIAL_HOSTS = frozenset(SOCIAL_SOURCE_LABELS)
 
+# Sumber tepercaya diberi bobot lebih tinggi, tetapi daftar ini bukan allow-list keras.
+# Tujuannya mendorong hasil editorial yang jelas tanpa mematikan sumber lokal yang valid.
+TRUSTED_NEWS_HOSTS = {
+    "kompas.com", "detik.com", "cnnindonesia.com", "cnbcindonesia.com",
+    "tempo.co", "antaranews.com", "republika.co.id", "liputan6.com",
+    "bisnis.com", "kontan.co.id", "katadata.co.id", "kumparan.com",
+    "tirto.id", "viva.co.id", "okezone.com", "sindonews.com",
+    "suara.com", "jpnn.com", "jawapos.com", "idntimes.com",
+    "thejakartapost.com", "voaindonesia.com", "bbc.com", "reuters.com",
+    "apnews.com", "aljazeera.com", "theguardian.com", "nytimes.com",
+    "bloomberg.com", "channelnewsasia.com", "straitstimes.com",
+}
+KNOWN_NEWS_PATH_HINTS = {
+    "news", "berita", "read", "artikel", "nasional", "regional", "internasional",
+    "ekonomi", "bisnis", "tekno", "teknologi", "otomotif", "edukasi", "health",
+    "kesehatan", "sport", "bola", "sepakbola", "finance", "politik", "hukum",
+}
+LOW_QUALITY_TITLE_RE = re.compile(
+    r"\b(?:terpopuler|recommended|rekomendasi|indeks|jadwal tv|live streaming|"
+    r"cek fakta tanpa konteks|download|profil lengkap|biodata|link nonton|"
+    r"harga terbaru|spesifikasi lengkap)\b",
+    re.IGNORECASE,
+)
+CLICKBAIT_TITLE_RE = re.compile(
+    r"\b(?:viral|heboh|bikin geger|netizen ramai|auto|simak|jangan kaget|"
+    r"ternyata|terungkap|ini dia|wajib tahu)\b",
+    re.IGNORECASE,
+)
+NEWS_VERB_RE = re.compile(
+    r"\b(?:rilis|umumkan|sebut|jelaskan|dorong|gelar|tetapkan|naik|turun|"
+    r"menang|kalah|tangkap|periksa|gugat|vonis|resmikan|luncurkan|"
+    r"investigasi|laporkan|minta|duga|temukan|prediksi|peringatkan)\b",
+    re.IGNORECASE,
+)
+QUALITY_TARGET_RESULTS = 8
+MIN_VERIFIED_QUALITY_SCORE = 58
+MIN_UNVERIFIED_QUALITY_SCORE = 72
+
 # Navigasi dan profil tetap tidak dianggap artikel. Kata seperti watch, reels, dan shorts
 # sengaja tidak diblokir secara global karena dapat merupakan URL konten sosial individual.
 BLOCKED_URL_PARTS = {
@@ -158,13 +201,15 @@ BLOCKED_URL_PARTS = {
     "categories", "indeks", "index", "login", "signin", "privacy", "kebijakan", "kontak",
     "contact", "about", "redaksi", "rss", "sitemap", "advert", "iklan", "subscribe",
     "channel", "channels", "user", "users", "profile", "profiles", "account", "accounts",
-    "settings", "explore", "hashtag", "trending",
+    "settings", "explore", "hashtag", "trending", "author", "authors", "penulis",
+    "video", "foto", "photo", "gallery", "galeri", "infografik", "quiz",
 }
 BLOCKED_TITLE_PARTS = {
     "menu", "beranda", "home", "terpopuler", "lihat selengkapnya", "selengkapnya",
     "baca juga", "lainnya", "loading", "indeks berita", "rekomendasi untuk anda",
     "kebijakan privasi", "kontak kami", "masuk", "login", "download sekarang",
     "kelana kota", "podcast", "siaran langsung", "live streaming", "profil", "profile",
+    "newsletter", "advertorial", "sponsored", "foto", "galeri",
 }
 # Metrik akun atau engagement bukan isi berita. Baris tersebut dihapus dari ringkasan.
 SOCIAL_ENGAGEMENT_RE = re.compile(
@@ -195,6 +240,12 @@ DAY_MONTH_RE = re.compile(
     re.IGNORECASE,
 )
 NUMERIC_DATE_RE = re.compile(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b")
+ISO_DATE_RE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})(?:[T\s](\d{2}:\d{2}(?::\d{2})?)?)?")
+ENGLISH_DAY_MONTH_RE = re.compile(
+    r"\b(\d{1,2})\s+(january|february|march|april|may|june|july|august|"
+    r"september|october|november|december)\s+(\d{4})\b",
+    re.IGNORECASE,
+)
 ENGLISH_DATE_RE = re.compile(
     r"\b(january|february|march|april|may|june|july|august|september|"
     r"october|november|december)\s+(\d{1,2}),?\s+(\d{4})\b",
@@ -250,9 +301,28 @@ def _clean_text(value: Any, limit: int = 500) -> str:
 
 
 def _valid_url(value: Any) -> str:
+    """Validasi dan kanonisasi URL agar deduplikasi tidak kalah oleh parameter tracking."""
     value = str(value or "").strip().rstrip(".,;:!?")
     parsed = urlparse(value)
-    return value if parsed.scheme in {"http", "https"} and parsed.netloc else ""
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+
+    kept_query: list[tuple[str, str]] = []
+    for key, val in parse_qsl(parsed.query, keep_blank_values=False):
+        key_lower = key.lower()
+        if key_lower in TRACKING_QUERY_KEYS or any(
+            key_lower.startswith(prefix) for prefix in TRACKING_QUERY_PREFIXES
+        ):
+            continue
+        kept_query.append((key, val))
+
+    normalised = parsed._replace(
+        scheme=parsed.scheme.lower(),
+        netloc=parsed.netloc.lower(),
+        query=urlencode(kept_query, doseq=True),
+        fragment="",
+    )
+    return urlunparse(normalised)
 
 
 def _host(url: str) -> str:
@@ -273,6 +343,14 @@ def _is_blocked_host(host: str) -> bool:
 
 def _is_social_host(host: str) -> bool:
     return any(host == social or host.endswith(f".{social}") for social in SOCIAL_HOSTS)
+
+
+def _matches_known_host(host: str, domains: set[str]) -> bool:
+    return any(host == domain or host.endswith(f".{domain}") for domain in domains)
+
+
+def _is_trusted_news_host(host: str) -> bool:
+    return _matches_known_host(host, TRUSTED_NEWS_HOSTS)
 
 
 def _social_label(host: str) -> str:
@@ -438,6 +516,24 @@ def _is_today_from_text(value: str, now: datetime) -> tuple[bool, str]:
             return False, ""
         return parsed_day == now.date(), match.group(0)
 
+    match = ISO_DATE_RE.search(text)
+    if match:
+        try:
+            parsed_day = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        except ValueError:
+            return False, ""
+        return parsed_day == now.date(), match.group(0)
+
+    match = ENGLISH_DAY_MONTH_RE.search(text)
+    if match:
+        try:
+            parsed_day = date(
+                int(match.group(3)), ENGLISH_MONTH_NUMBERS[match.group(2).lower()], int(match.group(1))
+            )
+        except ValueError:
+            return False, ""
+        return parsed_day == now.date(), match.group(0)
+
     match = ENGLISH_DATE_RE.search(text)
     if match:
         try:
@@ -456,8 +552,10 @@ def _is_today_from_text(value: str, now: datetime) -> tuple[bool, str]:
             published = now - timedelta(hours=amount)
         elif unit == "menit":
             published = now - timedelta(minutes=amount)
-        else:
+        elif unit == "detik":
             published = now - timedelta(seconds=amount)
+        else:
+            published = now - timedelta(days=amount)
         return published.date() == now.date(), match.group(0)
 
     if re.search(r"\bhari\s+ini\b|\btoday\b", lower):
@@ -494,6 +592,8 @@ def _has_publication_signal(value: str) -> bool:
         RELATIVE_TIME_RE.search(text)
         or DAY_MONTH_RE.search(text)
         or NUMERIC_DATE_RE.search(text)
+        or ISO_DATE_RE.search(text)
+        or ENGLISH_DAY_MONTH_RE.search(text)
         or ENGLISH_DATE_RE.search(text)
         or re.search(r"\b(?:hari\s+ini|today|kemarin|yesterday)\b", lower)
     )
@@ -531,6 +631,11 @@ def _normalise_item(
     explicit_published = _clean_text(
         raw.get("published_at")
         or raw.get("publishedDate")
+        or raw.get("datePublished")
+        or raw.get("dateModified")
+        or raw.get("timestamp")
+        or raw.get("lastUpdated")
+        or raw.get("created_at")
         or raw.get("date")
         or raw.get("published")
         or raw.get("time"),
@@ -559,6 +664,14 @@ def _normalise_item(
         return None
 
     category_key, category = classify_category(title, description, url)
+    quality_score, quality_reasons = score_article_quality(
+        title=title,
+        summary=description,
+        url=url,
+        time_status=time_status,
+        category_key=category_key,
+        query="",
+    )
     return {
         "id": _article_id(url, title),
         "title": title,
@@ -572,6 +685,8 @@ def _normalise_item(
         "detected_at": detected_at,
         "category_key": category_key,
         "category": category,
+        "quality_score": quality_score,
+        "quality_reasons": quality_reasons,
     }
 
 
@@ -585,7 +700,18 @@ def _walk_json(
     """Dukung respons JSON tanpa mengunci ke satu skema Jina."""
     found: list[dict[str, Any]] = []
     if isinstance(value, dict):
-        item = _normalise_item(value, detected_at, now, allow_unverified=allow_unverified)
+        publication_context = "\n".join(
+            _clean_text(value.get(key), 1000)
+            for key in ("content", "description", "snippet", "text", "body")
+            if value.get(key)
+        )
+        item = _normalise_item(
+            value,
+            detected_at,
+            now,
+            publication_context=publication_context,
+            allow_unverified=allow_unverified,
+        )
         if item:
             found.append(item)
         for child in value.values():
@@ -665,6 +791,181 @@ def _parse_markdown(
         if item:
             items.append(item)
     return items, candidates
+
+
+
+def _query_terms(query: str) -> set[str]:
+    """Ambil kata bermakna dari kueri untuk menilai relevansi hasil."""
+    stopwords = {
+        "berita", "terbaru", "hari", "ini", "indonesia", "dan", "atau", "yang",
+        "untuk", "dengan", "dari", "pada", "dalam", "the", "a", "an", "of", "to",
+        "januari", "februari", "maret", "april", "mei", "juni", "juli", "agustus",
+        "september", "oktober", "november", "desember",
+    }
+    return {
+        term for term in re.findall(r"[a-zA-ZÀ-ÿ0-9]{4,}", query.casefold())
+        if term not in stopwords and not term.isdigit()
+    }
+
+
+def _path_article_score(url: str) -> tuple[int, list[str]]:
+    parsed = urlparse(url)
+    path = parsed.path.lower().strip("/")
+    segments = [segment for segment in path.split("/") if segment]
+    score = 0
+    reasons: list[str] = []
+
+    if re.search(r"/(?:20\d{2})/(?:0?[1-9]|1[0-2])/(?:0?[1-9]|[12]\d|3[01])(?:/|$)", f"/{path}/"):
+        score += 12
+        reasons.append("URL memuat pola tanggal artikel")
+    if any(segment in KNOWN_NEWS_PATH_HINTS for segment in segments):
+        score += 8
+        reasons.append("URL berada pada kanal berita")
+    if segments:
+        slug = segments[-1]
+        hyphen_words = [part for part in re.split(r"[-_]", slug) if len(part) >= 3]
+        if len(hyphen_words) >= 4 or len(slug) >= 32:
+            score += 10
+            reasons.append("slug terlihat seperti judul artikel")
+        elif len(slug) < 16 and not slug.isdigit():
+            score -= 12
+            reasons.append("slug terlalu pendek untuk artikel")
+    return score, reasons
+
+
+def score_article_quality(
+    *,
+    title: str,
+    summary: str,
+    url: str,
+    time_status: str,
+    category_key: str,
+    query: str = "",
+) -> tuple[int, list[str]]:
+    """Skor heuristik agar hasil SERP tidak asal direct link.
+
+    Parser tetap transparan dan deterministic: artikel dengan waktu hari ini, sumber editorial,
+    judul informatif, URL artikel, serta relevansi kueri mendapat prioritas tinggi.
+    """
+    score = 0
+    reasons: list[str] = []
+    title_clean = _clean_text(title, 300)
+    summary_clean = _clean_text(summary, 900)
+    title_lower = title_clean.casefold()
+    combined = f"{title_clean} {summary_clean} {url}".casefold()
+    host = _host(url)
+    is_social = _is_social_host(host)
+
+    if time_status == "verified_today":
+        score += 42
+        reasons.append("waktu publikasi terverifikasi hari ini")
+    else:
+        score += 8
+        reasons.append("waktu publikasi belum terverifikasi")
+
+    if _is_trusted_news_host(host):
+        score += 14
+        reasons.append("domain editorial tepercaya")
+    elif is_social:
+        score -= 12
+        reasons.append("konten sosial perlu verifikasi ekstra")
+    else:
+        score += 4
+        reasons.append("domain penerbit langsung")
+
+    path_score, path_reasons = _path_article_score(url)
+    score += path_score
+    reasons.extend(path_reasons)
+
+    title_len = len(title_clean)
+    if 35 <= title_len <= 160:
+        score += 12
+        reasons.append("judul cukup informatif")
+    elif title_len < 25:
+        score -= 15
+        reasons.append("judul terlalu pendek/generik")
+
+    if NEWS_VERB_RE.search(title_clean):
+        score += 5
+        reasons.append("judul berisi aksi/peristiwa berita")
+    if LOW_QUALITY_TITLE_RE.search(title_clean):
+        score -= 22
+        reasons.append("judul mengandung sinyal non-berita")
+    if CLICKBAIT_TITLE_RE.search(title_clean):
+        score -= 7
+        reasons.append("judul mengandung sinyal clickbait")
+
+    if summary_clean:
+        if len(summary_clean) >= 90:
+            score += 6
+            reasons.append("ringkasan cukup kaya")
+        else:
+            score += 2
+    else:
+        score -= 5
+        reasons.append("ringkasan kosong")
+
+    terms = _query_terms(query)
+    if terms:
+        matched_terms = {term for term in terms if term in combined}
+        if matched_terms:
+            score += min(14, 4 * len(matched_terms))
+            reasons.append("relevan dengan kueri")
+        # Kueri default luas sengaja tidak membuat hasil dihukum keras.
+        elif len(terms) <= 8:
+            score -= 12
+            reasons.append("kurang relevan dengan kueri")
+
+    if category_key == "lainnya":
+        score -= 4
+        reasons.append("kategori belum kuat")
+    else:
+        score += 4
+
+    return max(0, min(score, 100)), reasons[:6]
+
+
+def _apply_quality_scores(items: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
+    scored: list[dict[str, Any]] = []
+    for item in items:
+        quality_score, quality_reasons = score_article_quality(
+            title=str(item.get("title", "")),
+            summary=str(item.get("summary", "")),
+            url=str(item.get("url", "")),
+            time_status=str(item.get("time_status", "")),
+            category_key=str(item.get("category_key", "lainnya")),
+            query=query,
+        )
+        enriched = dict(item)
+        enriched["quality_score"] = quality_score
+        enriched["quality_reasons"] = quality_reasons
+        scored.append(enriched)
+    return scored
+
+
+def _rank_and_filter(items: list[dict[str, Any]], query: str, limit: int) -> list[dict[str, Any]]:
+    """Urutkan dan tahan hasil berkualitas rendah agar dashboard tidak sekadar daftar link."""
+    scored = _apply_quality_scores(items, query)
+    filtered = [
+        item for item in scored
+        if (
+            item.get("time_status") == "verified_today"
+            and int(item.get("quality_score", 0)) >= MIN_VERIFIED_QUALITY_SCORE
+        )
+        or (
+            item.get("time_status") == "needs_time_verification"
+            and int(item.get("quality_score", 0)) >= MIN_UNVERIFIED_QUALITY_SCORE
+        )
+    ]
+    filtered.sort(
+        key=lambda item: (
+            item.get("time_status") == "verified_today",
+            int(item.get("quality_score", 0)),
+            item.get("source_type") == "publisher",
+        ),
+        reverse=True,
+    )
+    return _deduplicate(filtered, limit)
 
 
 def _deduplicate(items: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
@@ -749,8 +1050,11 @@ def fallback_queries(primary_query: str, now: datetime | None = None) -> list[st
     today = today_indonesia(now)
     candidates = [
         f"{primary_query.strip()} berita terbaru {today}",
-        f"Berita Indonesia terbaru hari ini {today}",
-        f"Berita teknologi edukasi otomotif ekonomi kesehatan olahraga terbaru Indonesia {today}",
+        f"Berita nasional Indonesia terbaru hari ini {today}",
+        f"Berita ekonomi bisnis Indonesia terbaru hari ini {today}",
+        f"Berita teknologi pendidikan kesehatan terbaru Indonesia {today}",
+        f"Berita olahraga otomotif hiburan terbaru Indonesia {today}",
+        f"Berita dunia internasional terbaru hari ini {today}",
     ]
     unique: list[str] = []
     seen: set[str] = {primary_query.casefold().strip()}
@@ -770,7 +1074,12 @@ def fetch_raw_markdown(
     *,
     now: datetime | None = None,
 ) -> tuple[str, dict[str, str]]:
-    """Ambil respons Markdown mentah dari Jina Search dengan mesin direct."""
+    """Ambil respons mentah dari Jina Search.
+
+    Dokumentasi Jina menyarankan `s.jina.ai/?q=` untuk SERP dan `Accept: application/json`
+    untuk hasil terstruktur berisi URL, judul, konten, dan timestamp bila tersedia.
+    Parser tetap mendukung Markdown sebagai fallback bila endpoint mengembalikannya.
+    """
     if not api_key:
         raise ValueError("JINA_API_KEY belum diatur.")
 
@@ -778,9 +1087,10 @@ def fetch_raw_markdown(
     query = (query or default_query(current_now)).strip()
     headers = {
         "Authorization": f"Bearer {api_key}",
-        "X-Engine": "direct",
-        "Accept": "text/markdown, text/plain;q=0.9, application/json;q=0.8",
-        "User-Agent": "news-monitor-streamlit/3.0",
+        "Accept": "application/json",
+        "X-Respond-With": "markdown",
+        "X-Retain-Images": "none",
+        "User-Agent": "news-monitor-streamlit/4.0",
     }
     response = requests.get(
         JINA_SEARCH_URL,
@@ -799,6 +1109,9 @@ def fetch_raw_markdown(
         "fetched_at": current_now.isoformat(),
         "today_jakarta": today_indonesia(current_now),
         "content_type": response.headers.get("content-type", "tidak diketahui"),
+        "response_format": "json_preferred",
+        "quality_threshold_verified": str(MIN_VERIFIED_QUALITY_SCORE),
+        "quality_threshold_unverified": str(MIN_UNVERIFIED_QUALITY_SCORE),
     }
     return raw_markdown, metadata
 
@@ -811,13 +1124,14 @@ def _fetch_rounds(
     *,
     allow_unverified_fallback: bool,
 ) -> tuple[list[dict[str, Any]], dict[str, str], str]:
-    """Jalankan pencarian utama lalu hingga tiga kueri cadangan bila hasil terverifikasi kosong."""
+    """Jalankan pencarian utama lalu beberapa kueri cadangan sampai hasil berkualitas cukup."""
     now = jakarta_now()
     primary_query = (query or default_query(now)).strip()
     queries = [primary_query, *fallback_queries(primary_query, now)]
     raw_sections: list[str] = []
-    parsed_rounds: list[tuple[list[dict[str, Any]], dict[str, int]]] = []
+    parsed_rounds: list[tuple[list[dict[str, Any]], dict[str, int], str]] = []
     metadata: dict[str, str] | None = None
+    target_results = min(max_results, QUALITY_TARGET_RESULTS)
 
     for index, search_query in enumerate(queries):
         raw_markdown, round_metadata = fetch_raw_markdown(
@@ -828,22 +1142,26 @@ def _fetch_rounds(
         verified, stats = parse_search_response_details(
             raw_markdown, round_metadata["fetched_at"], max_results
         )
-        parsed_rounds.append((verified, stats))
-        if verified:
+        parsed_rounds.append((verified, stats, search_query))
+
+        verified_items: list[dict[str, Any]] = []
+        for items, _, item_query in parsed_rounds:
+            verified_items.extend(_apply_quality_scores(items, item_query))
+        if len(_rank_and_filter(verified_items, primary_query, max_results)) >= target_results:
             break
 
     assert metadata is not None
-    verified_items: list[dict[str, Any]] = []
-    for items, _ in parsed_rounds:
-        verified_items.extend(items)
-    articles = _deduplicate(verified_items, max_results)
+    verified_items = []
+    for items, _, item_query in parsed_rounds:
+        verified_items.extend(_apply_quality_scores(items, item_query))
+    articles = _rank_and_filter(verified_items, primary_query, max_results)
 
     # Tampilan Streamlit tidak dibiarkan kosong apabila respons berisi tautan artikel
     # langsung tanpa marker waktu. Status dan kartu memperjelas bahwa waktu belum diverifikasi.
     used_unverified = False
     if not articles and allow_unverified_fallback:
         unverified_items: list[dict[str, Any]] = []
-        for raw_section in raw_sections:
+        for raw_section, (_, _, item_query) in zip(raw_sections, parsed_rounds):
             # Hilangkan heading audit buatan sebelum mem-parsing ulang.
             raw = raw_section.split("\n\n", 1)[1] if "\n\n" in raw_section else raw_section
             items, _ = parse_search_response_details(
@@ -852,11 +1170,11 @@ def _fetch_rounds(
                 max_results,
                 allow_unverified_fallback=True,
             )
-            unverified_items.extend(items)
-        articles = _deduplicate(unverified_items, max_results)
+            unverified_items.extend(_apply_quality_scores(items, item_query))
+        articles = _rank_and_filter(unverified_items, primary_query, max_results)
         used_unverified = bool(articles)
 
-    raw_candidates = sum(stats["raw_candidates"] for _, stats in parsed_rounds)
+    raw_candidates = sum(stats["raw_candidates"] for _, stats, _ in parsed_rounds)
     verified_count = sum(item.get("time_status") == "verified_today" for item in articles)
     unverified_count = sum(item.get("time_status") == "needs_time_verification" for item in articles)
     metadata.update(

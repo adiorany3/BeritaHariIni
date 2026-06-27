@@ -51,6 +51,8 @@ def normalise_article(article: dict[str, Any]) -> dict[str, str]:
     value.setdefault("published_at", "Hari ini")
     value.setdefault("time_status", "verified_today")
     value.setdefault("time_note", "")
+    value.setdefault("quality_score", "0")
+    value.setdefault("quality_reasons", [])
     value.setdefault("summary", "")
     value.setdefault("source", "Sumber tidak diketahui")
     value.setdefault("url", "")
@@ -85,6 +87,8 @@ def render_article_card(article: dict[str, str]) -> None:
                 source_line += "  •  Konten sosial"
             if article.get("time_status") == "needs_time_verification":
                 source_line += "  •  Kandidat artikel"
+            if article.get("quality_score") and article.get("quality_score") != "0":
+                source_line += f"  •  Skor kualitas {article['quality_score']}"
             st.caption(source_line)
         with top_right:
             if article.get("time_status") == "needs_time_verification":
@@ -94,6 +98,10 @@ def render_article_card(article: dict[str, str]) -> None:
         st.markdown(f"**{article['title']}**")
         if article["summary"]:
             st.caption(article["summary"])
+        if article.get("quality_reasons") not in {"", "[]"}:
+            reasons = str(article.get("quality_reasons", "")).strip("[]").replace("'", "")
+            if reasons:
+                st.caption(f"Alasan lolos: {reasons}")
         if article.get("time_status") == "needs_time_verification":
             st.caption("Waktu publikasi belum ada pada respons pencarian. Periksa waktu di sumber asli.")
         if article["url"].startswith(("https://", "http://")):
