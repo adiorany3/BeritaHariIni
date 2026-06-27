@@ -1,0 +1,58 @@
+name: Morning News Telegram
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 07:15 WIB setiap hari. Hindari menit 00 agar lebih kecil risiko antrean Actions padat.
+    - cron: "15 7 * * *"
+      timezone: "Asia/Jakarta"
+
+permissions:
+  contents: read
+
+jobs:
+  send-morning-news:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_BROADCAST_CHAT_IDS: ${{ secrets.TELEGRAM_BROADCAST_CHAT_IDS }}
+      NEWS_QUERY: ${{ vars.NEWS_QUERY }}
+      MAX_RESULTS: ${{ vars.MAX_RESULTS || '10' }}
+      TELEGRAM_NEWS_LIMIT: ${{ vars.TELEGRAM_NEWS_LIMIT || '5' }}
+      NEWS_ENABLE_RSS: "1"
+      NEWS_MAX_RSS_FEEDS: "8"
+      NEWS_RSS_TIMEOUT: "4"
+      NEWS_MAX_SEARCH_ROUNDS: ${{ vars.NEWS_MAX_SEARCH_ROUNDS || '2' }}
+      NEWS_REQUEST_TIMEOUT: "25"
+      JINA_PAGE_TIMEOUT: "12"
+      JINA_RESPOND_WITH: "no-content"
+      NEWS_ENABLE_ARTICLE_SCRAPE: "1"
+      NEWS_MAX_ARTICLE_SCRAPES: ${{ vars.NEWS_MAX_ARTICLE_SCRAPES || '5' }}
+      NEWS_ARTICLE_SCRAPE_TIMEOUT: "12"
+      NEWS_ALLOW_SOCIAL: "0"
+      WORKER_SEND_TELEGRAM: "1"
+      WORKER_REQUIRE_TELEGRAM: "1"
+      WORKER_TELEGRAM_TITLE: ${{ vars.WORKER_TELEGRAM_TITLE || 'Berita terbaru pagi ini' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Send morning news to Telegram
+        run: python worker.py
