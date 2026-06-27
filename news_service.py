@@ -126,20 +126,35 @@ SOURCE_CATEGORY_HINTS: dict[str, str] = {
 IMAGE_SUFFIXES = (
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".avif", ".bmp", ".ico",
 )
+# Platform sosial, profil, dan perantara tidak dianggap sebagai artikel berita.
 BLOCKED_HOSTS = {
     "google.com", "news.google.com", "googleusercontent.com", "jina.ai", "s.jina.ai",
-    "t.me", "telegram.me",
+    "t.me", "telegram.me", "instagram.com", "youtube.com", "youtu.be", "facebook.com",
+    "fb.com", "tiktok.com", "x.com", "twitter.com", "threads.net", "linkedin.com",
+    "pinterest.com", "reddit.com", "whatsapp.com",
 }
 BLOCKED_URL_PARTS = {
     "search", "searchall", "tag", "tags", "topic", "topics", "kategori", "category",
     "categories", "indeks", "index", "login", "signin", "privacy", "kebijakan", "kontak",
     "contact", "about", "redaksi", "rss", "sitemap", "advert", "iklan", "subscribe",
+    "channel", "channels", "user", "users", "profile", "profiles", "account", "accounts",
+    "reel", "reels", "shorts", "watch", "podcast", "program", "live", "playlist",
 }
 BLOCKED_TITLE_PARTS = {
     "menu", "beranda", "home", "terpopuler", "lihat selengkapnya", "selengkapnya",
     "baca juga", "lainnya", "loading", "indeks berita", "rekomendasi untuk anda",
     "kebijakan privasi", "kontak kami", "masuk", "login", "download sekarang",
+    "kelana kota", "podcast", "siaran langsung", "live streaming", "profil", "profile",
 }
+SOCIAL_METADATA_RE = re.compile(
+    r"\b(?:\d+[\d.,]*[kmb]?\s*)?(?:followers?|pengikut|subscribers?|following)\b",
+    re.IGNORECASE,
+)
+NON_ARTICLE_CONTEXT_RE = re.compile(
+    r"\b(?:akun resmi|official account|subscribe|ikuti kami|follow us|kanal youtube|channel youtube)\b",
+    re.IGNORECASE,
+)
+MIN_HEADLINE_LENGTH = 8
 
 HEADING_LINK_RE = re.compile(
     r"(?m)^\s{0,3}#{2,6}\s+\[([^\]\n]{3,300})\]\((https?://[^\s)]+)\)"
@@ -233,16 +248,16 @@ def _is_blocked_host(host: str) -> bool:
 
 
 def _looks_like_direct_article(title: str, url: str) -> bool:
-    """Tolak gambar, halaman navigasi, hasil pencarian, dan URL perantara."""
+    """Terima hanya URL artikel penerbit, bukan sosial, profil, kanal, atau navigasi."""
     title = _clean_text(title, 300)
-    if len(title) < 8 or not url:
+    if len(title) < MIN_HEADLINE_LENGTH or not url:
         return False
-    title_lower = title.lower().strip()
+    title_lower = title.casefold().strip()
     if title_lower.startswith(("image ", "gambar ", "logo ", "icon ", "img-alt")):
         return False
-    if title_lower in BLOCKED_TITLE_PARTS:
+    if any(part in title_lower for part in BLOCKED_TITLE_PARTS):
         return False
-    if any(part in title_lower for part in ("copyright", "iklan", "advertisement")):
+    if any(part in title_lower for part in ("copyright", "iklan", "advertisement", "followers", "subscriber")):
         return False
 
     parsed = urlparse(url)
@@ -258,9 +273,20 @@ def _looks_like_direct_article(title: str, url: str) -> bool:
     if any(segment in BLOCKED_URL_PARTS for segment in segments):
         return False
     # Halaman depan dan URL utility hampir selalu tidak menunjuk ke artikel.
-    if len(segments) == 1 and segments[0] in {"berita", "news", "home", "latest", "terkini"}:
-        return False
+    if len(segments) == 1:
+        slug = segments[0]
+        if slug in {"berita", "news", "home", "latest", "terkini"}:
+            return False
+        # Tautan satu-segmen yang pendek lazimnya merupakan kanal/program, bukan artikel.
+        if len(slug) < 15:
+            return False
     return True
+
+
+def _looks_like_social_or_profile_context(*values: str) -> bool:
+    """Tolak kandidat yang membawa metadata akun, pengikut, atau pelanggan."""
+    context = " ".join(_clean_text(value, 1200) for value in values if value)
+    return bool(SOCIAL_METADATA_RE.search(context) or NON_ARTICLE_CONTEXT_RE.search(context))
 
 
 def _contains_keyword(text: str, keyword: str) -> bool:
@@ -400,6 +426,8 @@ def _normalise_item(
         f"{explicit_published}\n{publication_context}", now
     )
     if not is_today:
+        return None
+    if _looks_like_social_or_profile_context(title, description, publication_context, url):
         return None
 
     category_key, category = classify_category(title, description, url)
@@ -541,7 +569,7 @@ def fetch_raw_markdown(
         "Authorization": f"Bearer {api_key}",
         "X-Engine": "direct",
         "Accept": "text/markdown, text/plain;q=0.9, application/json;q=0.8",
-        "User-Agent": "news-monitor-streamlit/2.0",
+        "User-Agent": "news-monitor-streamlit/2.1",
     }
     response = requests.get(
         JINA_SEARCH_URL,

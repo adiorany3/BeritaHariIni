@@ -72,6 +72,28 @@ Kamis, 26 Jun 2026 23:50 WIB
         articles = parse_search_response(markdown, DETECTED_AT)
         self.assertEqual(len(articles), 1)
 
+    def test_social_profiles_and_non_news_program_pages_are_rejected(self) -> None:
+        markdown = """
+### [Lainnya](https://www.instagram.com/contoh_akun/)
+27 Juni 2026
+432K Followers
+
+### [Berita Video Panjang di YouTube](https://www.youtube.com/watch?v=contoh)
+27 Juni 2026
+811K Subscribers
+
+### [Kelana Kota](https://www.suarasurabaya.net/kelana-kota/)
+Sabtu, 27 Juni 2026
+Program radio harian
+
+### [Pemerintah Rilis Program Teknologi Baru untuk Sekolah](https://contoh.id/berita/program-teknologi-baru-sekolah)
+Sabtu, 27 Juni 2026 10:00 WIB
+"""
+        articles = parse_search_response(markdown, DETECTED_AT)
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(articles[0]["source"], "contoh.id")
+        self.assertEqual(articles[0]["title"], "Pemerintah Rilis Program Teknologi Baru untuk Sekolah")
+
     def test_today_indonesia(self) -> None:
         now = datetime(2026, 6, 27, 10, 0)
         self.assertEqual(today_indonesia(now), "27 Juni 2026")
