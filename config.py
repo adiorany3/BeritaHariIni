@@ -34,6 +34,9 @@ CONFIG_ENV_NAMES: tuple[str, ...] = (
     "TELEGRAM_NEWS_TIMEOUT",
     "TELEGRAM_MAX_SEARCH_ROUNDS",
     "TELEGRAM_POLL_TIMEOUT",
+    "TELEGRAM_AUTO_START",
+    "TELEGRAM_DELETE_WEBHOOK_ON_START",
+    "TELEGRAM_DROP_PENDING_UPDATES",
     "LOG_LEVEL",
 )
 
@@ -47,6 +50,9 @@ SPECIAL_SECTION_ALIASES: dict[str, tuple[tuple[str, str], ...]] = {
     "TELEGRAM_NEWS_TIMEOUT": (("telegram", "news_timeout"),),
     "TELEGRAM_MAX_SEARCH_ROUNDS": (("telegram", "max_search_rounds"),),
     "TELEGRAM_POLL_TIMEOUT": (("telegram", "poll_timeout"),),
+    "TELEGRAM_AUTO_START": (("telegram", "auto_start"),),
+    "TELEGRAM_DELETE_WEBHOOK_ON_START": (("telegram", "delete_webhook_on_start"),),
+    "TELEGRAM_DROP_PENDING_UPDATES": (("telegram", "drop_pending_updates"),),
     "NEWS_QUERY": (("news", "query"),),
     "MAX_RESULTS": (("news", "max_results"),),
     "LOG_LEVEL": (("app", "log_level"),),

@@ -52,6 +52,7 @@ Versi ini tidak lagi menampilkan hasil tersimpan dari workflow. Telegram sekaran
 ├── news_service.py
 ├── storage.py
 ├── telegram_bot.py
+├── telegram_runtime.py
 ├── worker.py
 └── requirements.txt
 ```
@@ -155,6 +156,9 @@ Jika `TELEGRAM_ALLOWED_CHAT_IDS` kosong, semua chat yang menemukan bot dapat men
 | `TELEGRAM_NEWS_TIMEOUT` | `25` | Timeout pencarian berita untuk request dari Telegram. |
 | `TELEGRAM_MAX_SEARCH_ROUNDS` | ikut `NEWS_MAX_SEARCH_ROUNDS` | Override jumlah fallback Jina khusus Telegram. |
 | `TELEGRAM_POLL_TIMEOUT` | `30` | Timeout long polling Telegram. |
+| `TELEGRAM_AUTO_START` | `0` | Jika `1`, bot polling otomatis start saat `app.py` aktif di Streamlit. |
+| `TELEGRAM_DELETE_WEBHOOK_ON_START` | `1` | Matikan webhook saat polling start. Penting karena Telegram tidak mengirim update ke polling bila webhook masih aktif. |
+| `TELEGRAM_DROP_PENDING_UPDATES` | `0` | Jika `1`, update lama di antrean Telegram dibuang saat deleteWebhook. |
 
 ## Deploy di Streamlit Community Cloud
 
@@ -190,19 +194,42 @@ news_limit = 5
 news_timeout = 25
 max_search_rounds = 2
 poll_timeout = 30
+# Agar bot ikut hidup dari app.py di Streamlit Cloud.
+auto_start = true
+# Wajib untuk long polling jika token pernah dipasang webhook.
+delete_webhook_on_start = true
+drop_pending_updates = false
 ```
 
 Aplikasi juga masih mendukung format root-level lama seperti `NEWS_ENABLE_RSS = "1"` atau `TELEGRAM_BOT_TOKEN = "..."`. Namun format sectioned `[news]`, `[jina]`, dan `[telegram]` lebih rapi untuk Streamlit Cloud.
 
-### Catatan penting tentang Telegram di Streamlit Cloud
+### Telegram di Streamlit Cloud
 
-Streamlit Community Cloud menjalankan `app.py` sebagai aplikasi web. Bot Telegram long polling di `telegram_bot.py` tetap perlu proses worker yang terus hidup, misalnya VPS, Render worker, Railway worker, atau environment lain yang bisa menjalankan:
+Streamlit Community Cloud menjalankan `app.py`. Karena itu versi ini menambahkan `telegram_runtime.py` agar bot Telegram bisa dinyalakan dari dashboard Streamlit melalui background polling thread.
+
+Langkah pakai di Streamlit Cloud:
+
+1. Isi secret `[telegram].bot_token` dan `JINA_API_KEY`.
+2. Set `auto_start = true` bila ingin bot start otomatis saat aplikasi aktif.
+3. Deploy/reboot app, lalu buka sidebar **Telegram Bot**.
+4. Klik **Tes token & webhook** untuk memastikan token valid dan webhook kosong.
+5. Bila `auto_start` belum aktif, klik **Mulai bot**.
+
+Jika token pernah dipakai webhook di platform lain, polling bisa diam. Set berikut agar app otomatis memanggil `deleteWebhook` saat start:
+
+```toml
+[telegram]
+delete_webhook_on_start = true
+drop_pending_updates = false
+```
+
+Catatan: background thread di Streamlit Cloud aktif selama server/app Streamlit hidup. Untuk bot yang harus respons 24/7 tanpa bergantung app tidur/rerun, jalankan worker terpisah di VPS/Render/Railway dengan:
 
 ```bash
 python telegram_bot.py
 ```
 
-Untuk worker tersebut, secret bisa diberikan sebagai environment variable atau file lokal `.streamlit/secrets.toml` dengan isi yang sama seperti panel Streamlit Secrets. Jika hanya deploy `app.py` di Streamlit Community Cloud, dashboard aman membaca secrets, tetapi proses bot tidak otomatis berjalan.
+Worker eksternal tetap bisa memakai environment variable atau file lokal `.streamlit/secrets.toml` dengan isi yang sama seperti panel Streamlit Secrets.
 
 ## Konfigurasi performa
 
@@ -222,12 +249,16 @@ Untuk worker tersebut, secret bisa diberikan sebagai environment variable atau f
 | `TELEGRAM_BOT_TOKEN` | kosong | Token bot Telegram untuk mode interaktif. Wajib bila menjalankan `telegram_bot.py`. |
 | `TELEGRAM_NEWS_LIMIT` | `5` | Batas artikel yang dikirim bot Telegram per tema. |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | kosong | Kunci akses bot ke chat ID tertentu. |
+| `TELEGRAM_AUTO_START` | `0` | Start bot otomatis dari Streamlit app. |
+| `TELEGRAM_DELETE_WEBHOOK_ON_START` | `1` | Hapus webhook supaya long polling menerima pesan. |
+| `TELEGRAM_DROP_PENDING_UPDATES` | `0` | Buang update lama saat deleteWebhook bila diperlukan. |
 
 ## Keamanan secrets
 
 - Jangan commit `.streamlit/secrets.toml`; repository hanya menyertakan `.streamlit/secrets.toml.example`.
 - Untuk Streamlit Cloud, isi secret lewat **Settings > Secrets** dalam format TOML.
 - Dashboard hanya menampilkan status token tersedia/tidak, tidak pernah mencetak nilai token.
+- Panel Telegram di sidebar menyediakan tombol tes token/webhook tanpa menampilkan token.
 - `config.py` membaca prioritas: environment variable → Streamlit Secrets root-level → Streamlit Secrets sectioned.
 - Jika token pernah terlanjur muncul di commit, chat, screenshot, atau log, segera rotate token di BotFather/Jina.
 

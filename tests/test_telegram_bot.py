@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from threading import Event
 from unittest.mock import Mock, patch
 
 from telegram_bot import (
@@ -45,6 +46,35 @@ class TelegramBotTests(unittest.TestCase):
         self.assertIn("Rp32.000", text)
         self.assertIn("Buka berita asli", text)
         self.assertIn("https://www.kompas.com/read/2026/06/27/harga-telur", text)
+
+
+    def test_run_polling_deletes_webhook_before_waiting_for_updates(self) -> None:
+        session = Mock()
+        session.post.return_value.json.return_value = {"ok": True, "result": []}
+        session.post.return_value.raise_for_status = Mock()
+        bot = TelegramNewsBot(token="telegram-token", jina_api_key="jina-token", session=session)
+        stop_event = Event()
+        stop_event.set()
+
+        bot.run_polling(poll_timeout=5, stop_event=stop_event, delete_webhook_on_start=True)
+
+        first_url = session.post.call_args_list[0].args[0]
+        first_payload = session.post.call_args_list[0].kwargs["json"]
+        self.assertIn("deleteWebhook", first_url)
+        self.assertEqual(first_payload, {"drop_pending_updates": False})
+
+    def test_get_me_and_webhook_info_call_safe_telegram_methods(self) -> None:
+        session = Mock()
+        session.post.return_value.json.return_value = {"ok": True, "result": {"username": "BotSaya"}}
+        session.post.return_value.raise_for_status = Mock()
+        bot = TelegramNewsBot(token="telegram-token", jina_api_key="jina-token", session=session)
+
+        self.assertEqual(bot.get_me()["result"]["username"], "BotSaya")
+        bot.get_webhook_info()
+
+        called_urls = [call.args[0] for call in session.post.call_args_list]
+        self.assertTrue(any("getMe" in url for url in called_urls))
+        self.assertTrue(any("getWebhookInfo" in url for url in called_urls))
 
     def test_handle_text_fetches_news_for_theme_and_sends_message(self) -> None:
         session = Mock()

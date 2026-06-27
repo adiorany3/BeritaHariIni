@@ -26,6 +26,14 @@ class ConfigTests(unittest.TestCase):
         with patch.dict(os.environ, {"JINA_API_KEY": "from-env"}, clear=True), patch.object(config, "_combined_secrets", return_value=fake):
             self.assertEqual(config.get_secret("JINA_API_KEY"), "from-env")
 
+
+    def test_telegram_streamlit_runtime_flags_are_read(self) -> None:
+        fake = {"telegram": {"auto_start": True, "delete_webhook_on_start": True, "drop_pending_updates": False}}
+        with patch.dict(os.environ, {}, clear=True), patch.object(config, "_combined_secrets", return_value=fake):
+            self.assertTrue(config.get_secret_bool("TELEGRAM_AUTO_START", False))
+            self.assertTrue(config.get_secret_bool("TELEGRAM_DELETE_WEBHOOK_ON_START", False))
+            self.assertFalse(config.get_secret_bool("TELEGRAM_DROP_PENDING_UPDATES", True))
+
     def test_apply_secrets_to_environment(self) -> None:
         fake = {"telegram": {"token": "telegram-secret"}, "news": {"allow_social": False}}
         with patch.dict(os.environ, {}, clear=True), patch.object(config, "_combined_secrets", return_value=fake):

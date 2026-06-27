@@ -9,7 +9,7 @@ import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-from config import apply_secrets_to_environment, get_secret, has_secret
+from config import apply_secrets_to_environment, get_secret, get_secret_bool, has_secret
 from news_service import CATEGORY_ORDER, category_labels, default_query, fetch_news_with_raw
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -119,6 +119,68 @@ def render_grouped_articles(articles: list[dict[str, str]], empty_message: str) 
             render_article_card(article)
 
 
+
+
+def render_telegram_controls() -> None:
+    """Kontrol bot Telegram dari Streamlit Cloud.
+
+    Streamlit Cloud hanya menjalankan `app.py`; karena itu polling bot perlu
+    dinyalakan dari aplikasi ini atau lewat worker eksternal.
+    """
+    st.subheader("Telegram Bot")
+    token_ready = has_secret("TELEGRAM_BOT_TOKEN")
+    jina_ready = has_secret("JINA_API_KEY")
+    st.write("Token bot:", "✅ tersedia" if token_ready else "⚠️ belum diatur")
+    st.write("Token Jina:", "✅ tersedia" if jina_ready else "⚠️ belum diatur")
+
+    if not token_ready:
+        st.caption("Isi [telegram].bot_token di Streamlit Secrets agar bot bisa merespons pesan.")
+        return
+
+    from telegram_runtime import get_runtime
+
+    runtime = get_runtime()
+    auto_start = get_secret_bool("TELEGRAM_AUTO_START", False)
+    if auto_start:
+        runtime.start()
+    status = runtime.status()
+    st.write("Polling:", "🟢 aktif" if status.get("running") else "⚪ nonaktif")
+    st.caption(f"Event terakhir: {status.get('last_event', '-')}")
+    if status.get("last_error"):
+        st.error(status["last_error"])
+    if status.get("updates_processed"):
+        st.caption(f"Update diproses: {status['updates_processed']}")
+
+    col_start, col_stop = st.columns(2)
+    if col_start.button("Mulai bot", key="telegram_start", use_container_width=True):
+        runtime.start()
+        st.rerun()
+    if col_stop.button("Stop bot", key="telegram_stop", use_container_width=True):
+        runtime.stop()
+        st.rerun()
+
+    if st.button("Tes token & webhook", key="telegram_test", use_container_width=True):
+        try:
+            from telegram_bot import create_bot_from_env
+
+            bot = create_bot_from_env()
+            me = (bot.get_me() or {}).get("result", {})
+            webhook = (bot.get_webhook_info() or {}).get("result", {})
+            username = me.get("username") or me.get("first_name") or "bot"
+            st.success(f"Token Telegram valid untuk @{username}.")
+            webhook_url = str(webhook.get("url") or "").strip()
+            if webhook_url:
+                st.warning("Webhook masih aktif. Klik Mulai bot atau set delete_webhook_on_start=true agar polling bisa menerima pesan.")
+            else:
+                st.caption("Webhook kosong; mode long polling/getUpdates bisa menerima pesan.")
+        except Exception as error:
+            st.error(f"Tes Telegram gagal: {error}")
+
+    if not jina_ready:
+        st.warning("Bot bisa menjawab /start, tapi pencarian berita butuh JINA_API_KEY.")
+    st.caption("Di Streamlit Cloud, bot aktif selama aplikasi/server Streamlit tetap hidup. Untuk bot 24/7 paling stabil, jalankan telegram_bot.py di worker/VPS.")
+
+
 def display_raw_response(raw_markdown: str, metadata: dict[str, str]) -> None:
     """Audit respons mentah tanpa merender gambar, HTML, atau tautan sumber."""
     if not raw_markdown:
@@ -159,6 +221,8 @@ with st.sidebar:
     st.write("Mode Jina:", os.getenv("JINA_RESPOND_WITH", "no-content"))
     st.write("Maks. pencarian Jina/siklus:", os.getenv("NEWS_MAX_SEARCH_ROUNDS", "2"))
     st.write("Scrape isi artikel:", "✅ aktif" if os.getenv("NEWS_ENABLE_ARTICLE_SCRAPE", "1") not in {"0", "false", "False"} else "nonaktif")
+    st.divider()
+    render_telegram_controls()
     st.divider()
     st.caption("Kartu berita menampilkan informasi utama hasil scrape dan tetap menyediakan link asli untuk membaca sumber lengkap.")
 

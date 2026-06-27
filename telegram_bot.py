@@ -13,11 +13,13 @@ import logging
 import os
 import re
 import time
+from collections.abc import Callable
+from threading import Event
 from typing import Any
 
 import requests
 
-from config import apply_secrets_to_environment, get_secret, get_secret_int
+from config import apply_secrets_to_environment, get_secret, get_secret_bool, get_secret_int
 from news_service import fetch_news
 
 LOGGER = logging.getLogger(__name__)
@@ -188,6 +190,26 @@ class TelegramNewsBot:
             raise RuntimeError(f"Telegram API error pada {method}: {data}")
         return data
 
+    def get_me(self) -> dict[str, Any]:
+        """Validasi token dan ambil info bot tanpa menampilkan token."""
+        return self.request("getMe", {}, timeout=10)
+
+    def get_webhook_info(self) -> dict[str, Any]:
+        """Cek apakah token masih tersambung ke webhook.
+
+        Telegram hanya mengizinkan salah satu: webhook atau getUpdates. Jika webhook
+        masih aktif dari deploy sebelumnya, long polling tidak akan menerima pesan.
+        """
+        return self.request("getWebhookInfo", {}, timeout=10)
+
+    def delete_webhook(self, *, drop_pending_updates: bool = False) -> dict[str, Any]:
+        """Matikan webhook supaya long polling/getUpdates bisa menerima pesan."""
+        return self.request(
+            "deleteWebhook",
+            {"drop_pending_updates": bool(drop_pending_updates)},
+            timeout=10,
+        )
+
     def get_updates(self, offset: int | None, poll_timeout: int) -> list[dict[str, Any]]:
         payload: dict[str, Any] = {
             "timeout": poll_timeout,
@@ -279,22 +301,56 @@ class TelegramNewsBot:
             return
         self.handle_text(int(chat_id), text)
 
-    def run_polling(self, poll_timeout: int = DEFAULT_POLL_TIMEOUT) -> None:
+    def run_polling(
+        self,
+        poll_timeout: int = DEFAULT_POLL_TIMEOUT,
+        *,
+        stop_event: Event | None = None,
+        status_callback: Callable[[str, str], None] | None = None,
+        delete_webhook_on_start: bool = True,
+        drop_pending_updates: bool = False,
+    ) -> None:
+        """Jalankan long polling.
+
+        `stop_event` dan `status_callback` membuat fungsi ini aman dipakai sebagai
+        background thread di Streamlit, selain tetap bisa dijalankan langsung lewat
+        `python telegram_bot.py`.
+        """
         offset: int | None = None
+        if delete_webhook_on_start:
+            try:
+                self.delete_webhook(drop_pending_updates=drop_pending_updates)
+                if status_callback:
+                    status_callback("webhook_deleted", "Webhook Telegram dimatikan; bot memakai long polling.")
+            except Exception as error:
+                LOGGER.warning("Gagal deleteWebhook: %s", error)
+                if status_callback:
+                    status_callback("warning", f"Gagal deleteWebhook: {error}")
         LOGGER.info("Telegram bot aktif. Menunggu pesan...")
-        while True:
+        if status_callback:
+            status_callback("running", "Bot aktif dan menunggu pesan Telegram.")
+        while stop_event is None or not stop_event.is_set():
             try:
                 updates = self.get_updates(offset, poll_timeout)
+                if updates and status_callback:
+                    status_callback("updates", f"Menerima {len(updates)} update dari Telegram.")
                 for update in updates:
                     update_id = int(update.get("update_id", 0))
                     offset = update_id + 1
                     self.handle_update(update)
+                    if status_callback:
+                        status_callback("processed", f"Update {update_id} selesai diproses.")
             except KeyboardInterrupt:
                 LOGGER.info("Telegram bot dihentikan.")
                 return
             except Exception as error:
                 LOGGER.exception("Polling Telegram gagal: %s", error)
+                if status_callback:
+                    status_callback("error", f"Polling Telegram gagal: {error}")
                 time.sleep(3)
+        LOGGER.info("Telegram bot stop_event diterima.")
+        if status_callback:
+            status_callback("stopped", "Bot dihentikan dari aplikasi Streamlit.")
 
 
 def create_bot_from_env() -> TelegramNewsBot:
@@ -324,7 +380,13 @@ def main() -> None:
     logging.basicConfig(level=get_secret("LOG_LEVEL", "INFO"), format="%(levelname)s: %(message)s")
     bot = create_bot_from_env()
     poll_timeout = get_secret_int("TELEGRAM_POLL_TIMEOUT", DEFAULT_POLL_TIMEOUT, minimum=5, maximum=50)
-    bot.run_polling(poll_timeout=poll_timeout)
+    delete_webhook_on_start = get_secret_bool("TELEGRAM_DELETE_WEBHOOK_ON_START", True)
+    drop_pending_updates = get_secret_bool("TELEGRAM_DROP_PENDING_UPDATES", False)
+    bot.run_polling(
+        poll_timeout=poll_timeout,
+        delete_webhook_on_start=delete_webhook_on_start,
+        drop_pending_updates=drop_pending_updates,
+    )
 
 
 if __name__ == "__main__":
