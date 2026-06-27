@@ -14,13 +14,15 @@ import os
 import re
 import time
 from collections.abc import Callable
-from threading import Event
+from pathlib import Path
+from threading import Event, RLock
 from typing import Any
 
 import requests
 
 from config import apply_secrets_to_environment, get_secret, get_secret_bool, get_secret_int
 from news_service import build_jina_reader_url, fetch_news
+from storage import read_json, write_json
 
 LOGGER = logging.getLogger(__name__)
 TELEGRAM_API_BASE = "https://api.telegram.org/bot{token}/{method}"
@@ -28,6 +30,9 @@ MAX_TELEGRAM_MESSAGE_LENGTH = 4096
 SAFE_MESSAGE_LENGTH = 3800
 DEFAULT_NEWS_LIMIT = 5
 DEFAULT_POLL_TIMEOUT = 30
+BASE_DIR = Path(__file__).resolve().parent
+TELEGRAM_UPDATE_STATE_PATH = BASE_DIR / "data" / "telegram_updates_state.json"
+MAX_STORED_TELEGRAM_UPDATES = 600
 
 
 HELP_TEXT = """📰 <b>Bot Berita Hari Ini</b>
@@ -163,6 +168,56 @@ def build_news_messages(theme: str, articles: list[dict[str, Any]], metadata: di
     return messages
 
 
+
+
+class TelegramUpdateDeduper:
+    """Dedupe update/message Telegram agar restart/rerun tidak memproses pesan yang sama berkali-kali."""
+
+    def __init__(self, path: str | Path = TELEGRAM_UPDATE_STATE_PATH, *, enabled: bool = True) -> None:
+        self.path = Path(path)
+        self.enabled = enabled
+        self._lock = RLock()
+
+    def _load(self) -> dict[str, Any]:
+        payload = read_json(self.path, {"processed": []})
+        if not isinstance(payload, dict):
+            return {"processed": []}
+        processed = payload.get("processed")
+        if not isinstance(processed, list):
+            processed = []
+        return {"processed": [item for item in processed if isinstance(item, dict)]}
+
+    def _save(self, payload: dict[str, Any]) -> None:
+        payload["processed"] = payload.get("processed", [])[-MAX_STORED_TELEGRAM_UPDATES:]
+        write_json(self.path, payload)
+
+    @staticmethod
+    def update_key(update: dict[str, Any]) -> str:
+        update_id = update.get("update_id")
+        message = update.get("message") or {}
+        chat = message.get("chat") or {}
+        chat_id = chat.get("id")
+        message_id = message.get("message_id")
+        if chat_id is not None and message_id is not None:
+            return f"message:{chat_id}:{message_id}"
+        return f"update:{update_id}"
+
+    def claim(self, update: dict[str, Any]) -> bool:
+        """Return True bila update baru berhasil diklaim untuk diproses."""
+        if not self.enabled:
+            return True
+        key = self.update_key(update)
+        with self._lock:
+            payload = self._load()
+            if any(item.get("key") == key for item in payload.get("processed", [])):
+                return False
+            payload.setdefault("processed", []).append(
+                {"key": key, "claimed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+            )
+            self._save(payload)
+            return True
+
+
 class TelegramNewsBot:
     def __init__(
         self,
@@ -174,6 +229,8 @@ class TelegramNewsBot:
         request_timeout: int | None = None,
         max_search_rounds: int | None = None,
         session: requests.Session | None = None,
+        dedupe_updates: bool = True,
+        update_state_path: str | Path = TELEGRAM_UPDATE_STATE_PATH,
     ) -> None:
         if not token:
             raise ValueError("TELEGRAM_BOT_TOKEN belum diatur.")
@@ -184,6 +241,7 @@ class TelegramNewsBot:
         self.request_timeout = request_timeout
         self.max_search_rounds = max_search_rounds
         self.session = session or requests.Session()
+        self.update_deduper = TelegramUpdateDeduper(update_state_path, enabled=dedupe_updates)
 
     def api_url(self, method: str) -> str:
         return TELEGRAM_API_BASE.format(token=self.token, method=method)
@@ -298,14 +356,18 @@ class TelegramNewsBot:
         for message in build_news_messages(theme, articles[: self.news_limit], metadata):
             self.send_message(chat_id, message)
 
-    def handle_update(self, update: dict[str, Any]) -> None:
+    def handle_update(self, update: dict[str, Any]) -> bool:
+        if not self.update_deduper.claim(update):
+            LOGGER.info("Update Telegram dilewati karena sudah pernah diproses: %s", update.get("update_id"))
+            return False
         message = update.get("message") or {}
         chat = message.get("chat") or {}
         chat_id = chat.get("id")
         text = message.get("text") or ""
         if chat_id is None or not text:
-            return
+            return False
         self.handle_text(int(chat_id), text)
+        return True
 
     def run_polling(
         self,
@@ -343,9 +405,12 @@ class TelegramNewsBot:
                 for update in updates:
                     update_id = int(update.get("update_id", 0))
                     offset = update_id + 1
-                    self.handle_update(update)
+                    processed = self.handle_update(update)
                     if status_callback:
-                        status_callback("processed", f"Update {update_id} selesai diproses.")
+                        if processed:
+                            status_callback("processed", f"Update {update_id} selesai diproses.")
+                        else:
+                            status_callback("skipped", f"Update {update_id} dilewati karena duplikat/kosong.")
             except KeyboardInterrupt:
                 LOGGER.info("Telegram bot dihentikan.")
                 return
@@ -372,6 +437,7 @@ def create_bot_from_env() -> TelegramNewsBot:
         max_search_rounds = get_secret_int("TELEGRAM_MAX_SEARCH_ROUNDS", 2, minimum=0, maximum=3)
     else:
         max_search_rounds = None
+    dedupe_updates = get_secret_bool("TELEGRAM_DEDUPE_UPDATES", True)
     return TelegramNewsBot(
         token=token,
         jina_api_key=jina_api_key,
@@ -379,6 +445,7 @@ def create_bot_from_env() -> TelegramNewsBot:
         news_limit=news_limit,
         request_timeout=request_timeout,
         max_search_rounds=max_search_rounds,
+        dedupe_updates=dedupe_updates,
     )
 
 

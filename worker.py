@@ -6,7 +6,10 @@ ambil berita terbaru, lalu mengirim judul + konten hasil scrape + link teks Jina
 from __future__ import annotations
 
 import logging
+from datetime import datetime
+from hashlib import sha256
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from config import apply_secrets_to_environment, get_secret, get_secret_bool, get_secret_int
 from news_service import fetch_news
@@ -16,9 +19,67 @@ from telegram_bot import TelegramNewsBot, build_news_messages, parse_allowed_cha
 BASE_DIR = Path(__file__).resolve().parent
 LATEST_PATH = BASE_DIR / "data" / "latest_news.json"
 SENT_PATH = BASE_DIR / "data" / "sent_news.json"
+DIGEST_STATE_PATH = BASE_DIR / "data" / "telegram_digest_state.json"
+DEFAULT_DEDUPE_TIMEZONE = "Asia/Jakarta"
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 LOGGER = logging.getLogger(__name__)
+
+
+
+
+def _today_key(timezone_name: str = DEFAULT_DEDUPE_TIMEZONE) -> str:
+    """Tanggal lokal untuk kunci dedupe digest harian."""
+    try:
+        tz = ZoneInfo(timezone_name)
+    except Exception:
+        tz = ZoneInfo(DEFAULT_DEDUPE_TIMEZONE)
+    return datetime.now(tz).strftime("%Y-%m-%d")
+
+
+def _digest_key(*, chat_id: int, theme: str, date_key: str) -> str:
+    """Kunci stabil untuk mencegah digest pagi yang sama terkirim berkali-kali."""
+    raw = f"{date_key}|{chat_id}|{theme.strip().lower()}"
+    return sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def _normalise_digest_state(value: object) -> dict:
+    if not isinstance(value, dict):
+        return {"sent_digests": []}
+    sent = value.get("sent_digests")
+    if not isinstance(sent, list):
+        sent = []
+    return {"sent_digests": [item for item in sent if isinstance(item, dict)]}
+
+
+def _digest_already_sent(state: dict, *, chat_id: int, theme: str, date_key: str) -> bool:
+    key = _digest_key(chat_id=chat_id, theme=theme, date_key=date_key)
+    return any(item.get("key") == key for item in state.get("sent_digests", []))
+
+
+def _mark_digest_sent(state: dict, *, chat_id: int, theme: str, date_key: str) -> None:
+    key = _digest_key(chat_id=chat_id, theme=theme, date_key=date_key)
+    if any(item.get("key") == key for item in state.get("sent_digests", [])):
+        return
+    state.setdefault("sent_digests", []).append(
+        {
+            "key": key,
+            "chat_id": chat_id,
+            "theme": theme,
+            "date": date_key,
+            "sent_at": datetime.now(ZoneInfo(DEFAULT_DEDUPE_TIMEZONE)).isoformat(timespec="seconds"),
+        }
+    )
+    # Simpan ringkas: cukup 120 catatan terakhir supaya file state tidak membesar.
+    state["sent_digests"] = state.get("sent_digests", [])[-120:]
+
+
+def _unsent_chat_ids(chat_ids: set[int], *, state: dict, theme: str, date_key: str) -> set[int]:
+    return {
+        chat_id
+        for chat_id in chat_ids
+        if not _digest_already_sent(state, chat_id=chat_id, theme=theme, date_key=date_key)
+    }
 
 
 def _broadcast_chat_ids() -> set[int]:
@@ -124,17 +185,38 @@ def main() -> None:
             or query
             or "Berita terbaru pagi ini"
         )
-        sent = send_morning_digest(
-            token=token,
-            jina_api_key=api_key,
-            chat_ids=chat_ids,
-            theme=theme,
-            articles=articles,
-            metadata=metadata,
-            limit=telegram_limit,
-            request_timeout=telegram_timeout,
+        dedupe_enabled = get_secret_bool("WORKER_DEDUPE_TELEGRAM", True)
+        force_send = get_secret_bool("WORKER_FORCE_SEND", False)
+        dedupe_date = get_secret("WORKER_DEDUPE_DATE", "").strip() or _today_key(
+            get_secret("WORKER_DEDUPE_TIMEZONE", DEFAULT_DEDUPE_TIMEZONE).strip() or DEFAULT_DEDUPE_TIMEZONE
         )
-        LOGGER.info("Digest Telegram terkirim ke %d chat.", sent)
+        digest_state = _normalise_digest_state(read_json(DIGEST_STATE_PATH, {"sent_digests": []}))
+        target_chat_ids = set(chat_ids)
+        if dedupe_enabled and not force_send:
+            target_chat_ids = _unsent_chat_ids(
+                chat_ids, state=digest_state, theme=theme, date_key=dedupe_date
+            )
+        if not target_chat_ids:
+            LOGGER.info(
+                "Digest Telegram untuk %s sudah pernah terkirim hari ini; pengiriman dilewati.",
+                dedupe_date,
+            )
+            write_json(DIGEST_STATE_PATH, digest_state)
+        else:
+            sent = send_morning_digest(
+                token=token,
+                jina_api_key=api_key,
+                chat_ids=target_chat_ids,
+                theme=theme,
+                articles=articles,
+                metadata=metadata,
+                limit=telegram_limit,
+                request_timeout=telegram_timeout,
+            )
+            for chat_id in target_chat_ids:
+                _mark_digest_sent(digest_state, chat_id=chat_id, theme=theme, date_key=dedupe_date)
+            write_json(DIGEST_STATE_PATH, digest_state)
+            LOGGER.info("Digest Telegram terkirim ke %d chat.", sent)
     elif get_secret_bool("WORKER_REQUIRE_TELEGRAM", False):
         raise RuntimeError(
             "WORKER_REQUIRE_TELEGRAM=1, tetapi TELEGRAM_BOT_TOKEN atau "

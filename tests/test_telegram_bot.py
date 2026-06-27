@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 from threading import Event
 from unittest.mock import Mock, patch
 
 from telegram_bot import (
     TelegramNewsBot,
+    TelegramUpdateDeduper,
     build_news_messages,
     chat_is_allowed,
     normalise_theme,
@@ -70,6 +73,38 @@ class TelegramBotTests(unittest.TestCase):
         self.assertIn("Buka teks saja", text)
         self.assertIn("Buka berita asli", text)
 
+
+
+    def test_update_deduper_claims_message_only_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "telegram_updates_state.json"
+            deduper = TelegramUpdateDeduper(state_path)
+            update = {
+                "update_id": 10,
+                "message": {"message_id": 20, "chat": {"id": 123}, "text": "harga telur"},
+            }
+            self.assertTrue(deduper.claim(update))
+            self.assertFalse(deduper.claim(update))
+
+    def test_handle_update_skips_duplicate_message(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            session = Mock()
+            session.post.return_value.json.return_value = {"ok": True, "result": {}}
+            session.post.return_value.raise_for_status = Mock()
+            bot = TelegramNewsBot(
+                token="telegram-token",
+                jina_api_key="jina-token",
+                session=session,
+                update_state_path=Path(tmpdir) / "updates.json",
+            )
+            update = {
+                "update_id": 100,
+                "message": {"message_id": 5, "chat": {"id": 123}, "text": "/help"},
+            }
+            self.assertTrue(bot.handle_update(update))
+            self.assertFalse(bot.handle_update(update))
+            send_calls = [call for call in session.post.call_args_list if "sendMessage" in call.args[0]]
+            self.assertEqual(len(send_calls), 1)
 
     def test_run_polling_deletes_webhook_before_waiting_for_updates(self) -> None:
         session = Mock()

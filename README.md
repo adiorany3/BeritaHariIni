@@ -163,6 +163,7 @@ Jika `TELEGRAM_ALLOWED_CHAT_IDS` kosong, semua chat yang menemukan bot dapat men
 | `TELEGRAM_AUTO_START` | `0` | Jika `1`, bot polling otomatis start saat `app.py` aktif di Streamlit. |
 | `TELEGRAM_DELETE_WEBHOOK_ON_START` | `1` | Matikan webhook saat polling start. Penting karena Telegram tidak mengirim update ke polling bila webhook masih aktif. |
 | `TELEGRAM_DROP_PENDING_UPDATES` | `0` | Jika `1`, update lama di antrean Telegram dibuang saat deleteWebhook. |
+| `TELEGRAM_DEDUPE_UPDATES` | `1` | Cegah update/message Telegram yang sama diproses ulang saat polling restart/rerun. |
 
 ### Broadcast pagi via GitHub Actions
 
@@ -202,6 +203,8 @@ Repository Variables opsional:
 | `TELEGRAM_NEWS_LIMIT` | `5` | Jumlah artikel dalam pesan pagi. |
 | `NEWS_MAX_SEARCH_ROUNDS` | `2` | Batas fallback Jina. |
 | `MAX_RESULTS` | `10` | Jumlah kandidat artikel yang diproses worker. |
+| `WORKER_DEDUPE_TELEGRAM` | `1` | Cegah digest pagi yang sama terkirim berkali-kali di hari yang sama. |
+| `WORKER_FORCE_SEND` | `0` | Set `1` hanya kalau ingin mengirim ulang manual dari tab Actions. |
 
 Untuk mengubah jam, edit bagian workflow:
 
@@ -228,6 +231,11 @@ Konfigurasi worker terkait Telegram:
 | `WORKER_SEND_TELEGRAM` | otomatis | `1` untuk paksa kirim Telegram; `0` untuk hanya menyimpan JSON. |
 | `WORKER_REQUIRE_TELEGRAM` | `0` | Jika `1`, workflow gagal bila token/chat ID belum diatur. Workflow GitHub default memakai `1`. |
 | `WORKER_TELEGRAM_TITLE` | query / `Berita terbaru pagi ini` | Header pesan digest Telegram. |
+| `WORKER_DEDUPE_TELEGRAM` | `1` | Kunci pengiriman per tanggal + chat ID + judul agar tidak spam. |
+| `WORKER_FORCE_SEND` | `0` | Bypass dedupe untuk kirim ulang manual. Jangan aktifkan permanen. |
+| `WORKER_DEDUPE_TIMEZONE` | `Asia/Jakarta` | Zona waktu tanggal dedupe. |
+
+Workflow juga memakai `concurrency` sehingga dua run `Morning News Telegram` tidak berjalan bersamaan. State dedupe disimpan di `data/telegram_digest_state.json` dan workflow akan commit file ini setelah pengiriman. Jika file state gagal tersimpan, run berikutnya tidak tahu bahwa digest sudah pernah dikirim dan berisiko mengirim ulang.
 
 
 ## Deploy di Streamlit Community Cloud
@@ -271,11 +279,15 @@ auto_start = true
 # Wajib untuk long polling jika token pernah dipasang webhook.
 delete_webhook_on_start = true
 drop_pending_updates = false
+dedupe_updates = true
 
 [worker]
 send_telegram = true
 require_telegram = true
 telegram_title = "Berita terbaru pagi ini"
+dedupe_telegram = true
+dedupe_timezone = "Asia/Jakarta"
+force_send = false
 ```
 
 Aplikasi juga masih mendukung format root-level lama seperti `NEWS_ENABLE_RSS = "1"` atau `TELEGRAM_BOT_TOKEN = "..."`. Namun format sectioned `[news]`, `[jina]`, dan `[telegram]` lebih rapi untuk Streamlit Cloud.
@@ -329,10 +341,23 @@ Worker eksternal tetap bisa memakai environment variable atau file lokal `.strea
 | `TELEGRAM_AUTO_START` | `0` | Start bot otomatis dari Streamlit app. |
 | `TELEGRAM_DELETE_WEBHOOK_ON_START` | `1` | Hapus webhook supaya long polling menerima pesan. |
 | `TELEGRAM_DROP_PENDING_UPDATES` | `0` | Buang update lama saat deleteWebhook bila diperlukan. |
+| `TELEGRAM_DEDUPE_UPDATES` | `1` | Cegah pesan yang sama diproses ulang saat Streamlit rerun/restart. |
 | `TELEGRAM_BROADCAST_CHAT_IDS` | kosong | Tujuan broadcast worker pagi. |
 | `WORKER_SEND_TELEGRAM` | otomatis | Aktifkan/nonaktifkan pengiriman Telegram dari `worker.py`. |
 | `WORKER_REQUIRE_TELEGRAM` | `0` | Jadikan missing token/chat ID sebagai error. |
 | `WORKER_TELEGRAM_TITLE` | otomatis | Header pesan Telegram pagi. |
+| `WORKER_DEDUPE_TELEGRAM` | `1` | Cegah digest pagi dikirim ulang pada tanggal/chat/judul yang sama. |
+| `WORKER_FORCE_SEND` | `0` | Paksa kirim ulang digest manual bila benar-benar diperlukan. |
+
+## Jika Telegram mengirim berkali-kali
+
+Cek tiga hal ini dulu:
+
+1. Pastikan hanya satu mode aktif. Untuk broadcast pagi GitHub Actions, Streamlit bot interaktif boleh dimatikan dengan `auto_start = false` jika tidak diperlukan.
+2. Pastikan workflow punya permission `contents: write`, karena file `data/telegram_digest_state.json` perlu di-commit agar run berikutnya tahu digest hari itu sudah terkirim.
+3. Jangan set `WORKER_FORCE_SEND=1` permanen. Itu memang memaksa kirim ulang dan mengabaikan dedupe.
+
+Untuk mengirim ulang secara sadar dari tab Actions, set variable `WORKER_FORCE_SEND=1`, jalankan workflow manual, lalu kembalikan ke `0`.
 
 ## Keamanan secrets
 

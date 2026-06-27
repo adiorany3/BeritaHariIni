@@ -38,9 +38,14 @@ CONFIG_ENV_NAMES: tuple[str, ...] = (
     "TELEGRAM_AUTO_START",
     "TELEGRAM_DELETE_WEBHOOK_ON_START",
     "TELEGRAM_DROP_PENDING_UPDATES",
+    "TELEGRAM_DEDUPE_UPDATES",
     "WORKER_SEND_TELEGRAM",
     "WORKER_REQUIRE_TELEGRAM",
     "WORKER_TELEGRAM_TITLE",
+    "WORKER_DEDUPE_TELEGRAM",
+    "WORKER_FORCE_SEND",
+    "WORKER_DEDUPE_DATE",
+    "WORKER_DEDUPE_TIMEZONE",
     "LOG_LEVEL",
 )
 
@@ -58,11 +63,16 @@ SPECIAL_SECTION_ALIASES: dict[str, tuple[tuple[str, str], ...]] = {
     "TELEGRAM_AUTO_START": (("telegram", "auto_start"),),
     "TELEGRAM_DELETE_WEBHOOK_ON_START": (("telegram", "delete_webhook_on_start"),),
     "TELEGRAM_DROP_PENDING_UPDATES": (("telegram", "drop_pending_updates"),),
+    "TELEGRAM_DEDUPE_UPDATES": (("telegram", "dedupe_updates"),),
     "NEWS_QUERY": (("news", "query"),),
     "MAX_RESULTS": (("news", "max_results"),),
     "WORKER_SEND_TELEGRAM": (("worker", "send_telegram"),),
     "WORKER_REQUIRE_TELEGRAM": (("worker", "require_telegram"),),
     "WORKER_TELEGRAM_TITLE": (("worker", "telegram_title"),),
+    "WORKER_DEDUPE_TELEGRAM": (("worker", "dedupe_telegram"),),
+    "WORKER_FORCE_SEND": (("worker", "force_send"),),
+    "WORKER_DEDUPE_DATE": (("worker", "dedupe_date"),),
+    "WORKER_DEDUPE_TIMEZONE": (("worker", "dedupe_timezone"),),
     "LOG_LEVEL": (("app", "log_level"),),
 }
 

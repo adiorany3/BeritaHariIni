@@ -46,6 +46,23 @@ class WorkerBroadcastTests(unittest.TestCase):
         self.assertIn("https://r.jina.ai/https://www.kompas.com/read/harga-telur", sent_payload)
         self.assertIn("Buka berita asli", sent_payload)
 
+
+    def test_digest_state_filters_already_sent_chat(self) -> None:
+        state = {"sent_digests": []}
+        worker._mark_digest_sent(state, chat_id=111, theme="Berita terbaru pagi ini", date_key="2026-06-27")
+        unsent = worker._unsent_chat_ids(
+            {111, 222},
+            state=state,
+            theme="Berita terbaru pagi ini",
+            date_key="2026-06-27",
+        )
+        self.assertEqual(unsent, {222})
+
+    def test_digest_key_changes_by_date(self) -> None:
+        first = worker._digest_key(chat_id=111, theme="Pagi", date_key="2026-06-27")
+        second = worker._digest_key(chat_id=111, theme="Pagi", date_key="2026-06-28")
+        self.assertNotEqual(first, second)
+
     def test_main_requires_telegram_when_flag_enabled(self) -> None:
         with patch.dict(os.environ, {"WORKER_REQUIRE_TELEGRAM": "1", "WORKER_SEND_TELEGRAM": "0"}, clear=True), \
              patch("worker.fetch_news", return_value=([], {})), \
