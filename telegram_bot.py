@@ -1,7 +1,7 @@
 """Telegram bot interaktif untuk mencari berita berdasarkan tema yang dikirim user.
 
 User cukup mengirim tema seperti "harga telur" atau "/berita harga telur".
-Bot akan membalas judul, ringkasan/informasi utama hasil scrape, dan link asli artikel.
+Bot akan membalas judul, konten hasil scrape, link teks Jina, dan link asli artikel.
 
 Bot ini memakai long polling agar mudah dijalankan di VPS/Render/Railway/GitHub Codespaces,
 tanpa perlu menyiapkan webhook publik.
@@ -34,8 +34,8 @@ HELP_TEXT = """📰 <b>Bot Berita Hari Ini</b>
 
 Kirim tema berita, nanti bot akan mencari artikel hari ini dan membalas:
 • judul
-• ringkasan/informasi utama
-• link versi bersih Jina dan link berita asli
+• konten hasil scrape artikel
+• link teks Jina dan link berita asli
 
 Contoh:
 <code>harga telur</code>
@@ -101,11 +101,13 @@ def _compact(value: Any, limit: int = 520) -> str:
 
 def format_article(article: dict[str, Any], index: int) -> str:
     title = _escape(_compact(article.get("title") or "Tanpa judul", 180))
+    # Output Telegram memakai konten hasil scrape saja.
+    # Deskripsi RSS/SERP tidak dijadikan isi utama agar bot tidak mengirim preview dangkal/iklan.
+    scraped_info = article.get("scraped_info") or ""
     summary = _escape(
         _compact(
-            article.get("scraped_info")
-            or article.get("summary")
-            or "Ringkasan belum tersedia dari sumber.",
+            scraped_info
+            or "Konten artikel belum berhasil di-scrape. Buka link teks Jina untuk membaca versi teks, atau buka link asli.",
             650,
         )
     )
@@ -118,12 +120,12 @@ def format_article(article: dict[str, Any], index: int) -> str:
 
     lines = [
         f"<b>{index}. {title}</b>",
-        f"📝 {summary}",
+        f"📝 Konten: {summary}",
         f"🏷️ {source} • {published_at}",
     ]
     if url.startswith(("http://", "https://")):
         if jina_reader_url:
-            lines.append(f'🧹 <a href="{safe_jina_url}">Baca versi bersih (Jina)</a>')
+            lines.append(f'🧹 <a href="{safe_jina_url}">Buka teks saja (Jina)</a>')
         lines.append(f'🔗 <a href="{safe_url}">Buka berita asli</a>')
     return "\n".join(lines)
 
@@ -143,7 +145,7 @@ def build_news_messages(theme: str, articles: list[dict[str, Any]], metadata: di
     scraped = metadata.get("article_scrape_success")
     attempted = metadata.get("article_scrape_attempted")
     if scraped is not None and attempted is not None:
-        header += f"<i>Ringkasan diambil dari isi artikel: {html.escape(str(scraped))}/{html.escape(str(attempted))}</i>\n"
+        header += f"<i>Konten diambil dari isi artikel: {html.escape(str(scraped))}/{html.escape(str(attempted))}</i>\n"
     header += "\n"
 
     messages: list[str] = []

@@ -44,10 +44,31 @@ class TelegramBotTests(unittest.TestCase):
         text = "\n".join(messages)
         self.assertIn("Harga Telur Ayam Naik", text)
         self.assertIn("Rp32.000", text)
-        self.assertIn("Baca versi bersih", text)
+        self.assertIn("Buka teks saja", text)
         self.assertIn("https://r.jina.ai/https://www.kompas.com/read/2026/06/27/harga-telur", text)
         self.assertIn("Buka berita asli", text)
         self.assertIn("https://www.kompas.com/read/2026/06/27/harga-telur", text)
+
+    def test_build_news_messages_uses_scraped_content_only_not_serp_summary(self) -> None:
+        messages = build_news_messages(
+            "ai gambar",
+            [
+                {
+                    "title": "Startup AI Gambar Rilis Fitur Baru",
+                    "summary": "Deskripsi dari SERP yang tidak boleh jadi konten utama.",
+                    "scraped_info": "",
+                    "source": "contoh.id",
+                    "published_at": "2026-06-27T12:00:00",
+                    "url": "https://contoh.id/ai-gambar",
+                }
+            ],
+            {"article_scrape_success": "0", "article_scrape_attempted": "1"},
+        )
+        text = "\n".join(messages)
+        self.assertNotIn("Deskripsi dari SERP", text)
+        self.assertIn("Konten artikel belum berhasil di-scrape", text)
+        self.assertIn("Buka teks saja", text)
+        self.assertIn("Buka berita asli", text)
 
 
     def test_run_polling_deletes_webhook_before_waiting_for_updates(self) -> None:

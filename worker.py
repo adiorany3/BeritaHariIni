@@ -1,7 +1,7 @@
 """Pekerja terjadwal: cari berita, simpan hasil, dan kirim digest Telegram bila dikonfigurasi.
 
 Mode ini cocok untuk GitHub Actions `schedule`: workflow berjalan sebentar setiap pagi,
-ambil berita terbaru, lalu mengirim judul + ringkasan + link asli ke chat Telegram.
+ambil berita terbaru, lalu mengirim judul + konten hasil scrape + link teks Jina + link asli ke chat Telegram.
 """
 from __future__ import annotations
 

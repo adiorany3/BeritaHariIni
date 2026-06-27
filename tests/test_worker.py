@@ -42,7 +42,7 @@ class WorkerBroadcastTests(unittest.TestCase):
         self.assertIn("Berita terbaru pagi ini", sent_payload)
         self.assertIn("Harga Telur Ayam Naik", sent_payload)
         self.assertIn("Rp32.000", sent_payload)
-        self.assertIn("Baca versi bersih", sent_payload)
+        self.assertIn("Buka teks saja", sent_payload)
         self.assertIn("https://r.jina.ai/https://www.kompas.com/read/harga-telur", sent_payload)
         self.assertIn("Buka berita asli", sent_payload)
 

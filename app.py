@@ -82,10 +82,10 @@ def render_article_card(article: dict[str, str]) -> None:
         st.markdown(f"**{article['title']}**")
         info = article.get("scraped_info") or article.get("summary", "")
         if info:
-            st.markdown("**Informasi utama:**")
+            st.markdown("**Konten berita (hasil scrape):**")
             st.write(info)
-        elif article.get("summary"):
-            st.caption(article["summary"])
+        else:
+            st.info("Konten artikel belum berhasil di-scrape. Gunakan link teks Jina untuk membaca versi teks, atau buka link asli.")
         if article.get("quality_reasons") not in {"", "[]"}:
             reasons = str(article.get("quality_reasons", "")).strip("[]").replace("'", "")
             if reasons:
@@ -100,7 +100,7 @@ def render_article_card(article: dict[str, str]) -> None:
             link_left, link_right = st.columns([1, 1])
             with link_left:
                 if jina_reader_url:
-                    st.link_button("Baca versi bersih (Jina)", jina_reader_url, use_container_width=True)
+                    st.link_button("Buka teks saja (Jina)", jina_reader_url, use_container_width=True)
             with link_right:
                 st.link_button("Buka berita asli", original_url, use_container_width=True)
 
@@ -230,7 +230,7 @@ with st.sidebar:
     st.divider()
     render_telegram_controls()
     st.divider()
-    st.caption("Kartu berita menampilkan informasi utama hasil scrape dan tetap menyediakan link asli untuk membaca sumber lengkap.")
+    st.caption("Kartu berita menampilkan konten hasil scrape. Link teks Jina tersedia untuk membaca versi teks/minim iklan, dan link asli tetap tersedia sebagai sumber lengkap.")
 
 metric_left, metric_middle, metric_right, metric_extra = st.columns(4)
 metric_left.metric("Mode", "Pencarian langsung")
@@ -252,7 +252,7 @@ with st.expander("Cari berita langsung", expanded=True):
             st.error("Atur JINA_API_KEY di Streamlit Secrets untuk menjalankan pencarian langsung. Jangan commit token ke GitHub.")
         else:
             try:
-                with st.spinner("Mengambil, menyaring, dan men-scrape informasi utama artikel..."):
+                with st.spinner("Mengambil, menyaring, dan men-scrape konten berita..."):
                     live_articles, live_metadata, raw_markdown = fetch_news_with_raw(
                         api_key, query=query, max_results=30
                     )
