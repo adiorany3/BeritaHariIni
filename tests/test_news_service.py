@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
+import requests
 from datetime import datetime
 from unittest.mock import Mock, patch
 
@@ -197,19 +198,24 @@ Ringkasan berita yang membahas inovasi pendidikan digital di Indonesia.
         queries = fallback_queries("berita energi", datetime(2026, 6, 27, 10, 0))
         self.assertGreaterEqual(len(queries), 2)
         self.assertTrue(all("27 Juni 2026" in query for query in queries))
-        self.assertTrue(all("site:" in query for query in queries))
-        self.assertTrue(all("-site:youtube.com" in query for query in queries))
+        self.assertTrue(any("site:" in query for query in queries))
+        self.assertTrue(all(" OR " not in query and "(" not in query and ")" not in query for query in queries))
+        self.assertTrue(all("-site:" not in query for query in queries))
         self.assertEqual(len(queries), len(set(queries)))
 
     def test_source_scoped_query_removes_social_terms(self) -> None:
         query = source_scoped_query("berita ekonomi YouTube Instagram TikTok", datetime(2026, 6, 27, 10, 0))
         self.assertIn("site:kompas.com", query)
-        self.assertIn("-site:youtube.com", query)
+        self.assertNotIn("-site:youtube.com", query)
         self.assertNotIn("Instagram TikTok", query)
+        self.assertNotIn("OR", query)
 
-    def test_multi_word_search_is_quoted_as_phrase_for_jina(self) -> None:
+    def test_multi_word_search_keeps_phrase_without_jina_complex_syntax(self) -> None:
         query = source_scoped_query("berita harga telur hari ini", datetime(2026, 6, 27, 10, 0))
-        self.assertIn('"harga telur"', query)
+        self.assertIn("harga telur", query)
+        self.assertNotIn('"harga telur"', query)
+        self.assertNotIn(" OR ", query)
+        self.assertNotIn("-site:", query)
         self.assertIn("site:kompas.com", query)
         self.assertIn("27 Juni 2026", query)
         self.assertNotIn("berita harga telur hari ini 27 Juni", query)
@@ -420,6 +426,35 @@ Artikel membahas peluncuran mobil listrik baru dan rencana produksi kendaraan ra
         self.assertEqual(headers["X-Timeout"], "12")
         self.assertEqual(kwargs["timeout"], 25)
         self.assertEqual(metadata["jina_respond_with"], "no-content")
+
+    def test_fetch_raw_markdown_retries_422_with_simpler_query(self) -> None:
+        first = Mock()
+        first.text = ""
+        first.headers = {"content-type": "application/json"}
+        first.status_code = 422
+        http_error = requests.HTTPError("422 Client Error")
+        http_error.response = first
+        first.raise_for_status.side_effect = http_error
+
+        second = Mock()
+        second.text = '{"data": []}'
+        second.headers = {"content-type": "application/json"}
+        second.raise_for_status = Mock()
+
+        complex_query = '(site:antaranews.com OR site:liputan6.com) "ai gambar" 27 Juni 2026 -site:youtube.com'
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("news_service.requests.get", side_effect=[first, second]) as mocked_get:
+                raw, metadata = fetch_raw_markdown("token", query=complex_query, now=datetime(2026, 6, 27, 14, 0))
+
+        self.assertEqual(raw, '{"data": []}')
+        self.assertEqual(mocked_get.call_count, 2)
+        first_query = mocked_get.call_args_list[0].kwargs["params"]["q"]
+        retry_query = mocked_get.call_args_list[1].kwargs["params"]["q"]
+        self.assertNotIn(" OR ", first_query)
+        self.assertNotIn("-site:", first_query)
+        self.assertNotIn('"', first_query)
+        self.assertIn("ai gambar", retry_query)
+        self.assertEqual(metadata["jina_retried_after_422"], "true")
 
     def test_today_indonesia(self) -> None:
         now = datetime(2026, 6, 27, 10, 0)

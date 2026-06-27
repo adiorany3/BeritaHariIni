@@ -164,6 +164,11 @@ SOCIAL_NEGATIVE_QUERY = (
     "-site:facebook.com -site:x.com -site:twitter.com -site:threads.net "
     "-site:linkedin.com -site:reddit.com -site:t.me -site:telegram.me -site:news.google.com"
 )
+# Catatan penting: parser tetap memblokir sosial/video, tetapi kueri Jina sengaja
+# dibuat sederhana. `s.jina.ai` dapat mengembalikan 422 saat menerima query terlalu
+# kompleks seperti `(site:a OR site:b) "frasa" -site:x ...`. Karena itu operator
+# OR, tanda kurung, dan rangkaian negative-site tidak lagi dipakai pada request.
+JINA_QUERY_OPERATOR_RE = re.compile(r"\bOR\b|[()\[\]{}]", re.IGNORECASE)
 
 # Sumber tepercaya diberi bobot lebih tinggi, tetapi daftar ini bukan allow-list keras.
 # Tujuannya mendorong hasil editorial yang jelas tanpa mematikan sumber lokal yang valid.
@@ -1439,12 +1444,24 @@ def parse_search_response(
     return articles
 
 
-def _domain_filter_query(domains: tuple[str, ...] | list[str]) -> str:
-    return " OR ".join(f"site:{domain}" for domain in domains)
+
+def _domain_filter_query(domains: tuple[str, ...] | list[str] | str | None) -> str:
+    """Kembalikan filter satu domain untuk Jina.
+
+    Versi sebelumnya membuat `(site:a OR site:b) ... -site:x ...`. Query seperti itu
+    memang valid untuk sebagian mesin pencari, tetapi pada `s.jina.ai` bisa ditolak
+    sebagai 422. Karena itu Jina sekarang dipanggil dengan query pendek per-domain.
+    """
+    if isinstance(domains, str):
+        domain = domains
+    else:
+        domain = next(iter(domains or PUBLISHER_SEARCH_GROUPS[0]), "")
+    domain = re.sub(r"[^a-z0-9_.-]", "", str(domain).casefold()).strip(".-")
+    return f"site:{domain}" if domain else ""
 
 
 def _strip_query_noise(query: str) -> str:
-    """Buang operator sosial lama agar input user tidak kembali menarik video/postingan."""
+    """Buang operator/istilah yang membuat SERP lari ke sosial atau invalid."""
     cleaned = re.sub(
         r"\b(?:youtube|instagram|tiktok|facebook|twitter|threads|x\.com|google news|news\.google\.com)\b",
         " ",
@@ -1452,46 +1469,88 @@ def _strip_query_noise(query: str) -> str:
         flags=re.IGNORECASE,
     )
     cleaned = re.sub(r"-site:\S+", " ", cleaned)
-    return _clean_text(cleaned, 360)
+    cleaned = re.sub(r"\bsite:\S+", " ", cleaned, flags=re.IGNORECASE)
+    cleaned = JINA_QUERY_OPERATOR_RE.sub(" ", cleaned)
+    cleaned = cleaned.replace('"', " ").replace("'", " ")
+    return _clean_text(cleaned, 240)
 
 
 def _serp_query_intent(primary_query: str, now: datetime | None = None) -> str:
-    """Bentuk kueri untuk SERP tanpa memecah frasa input user."""
+    """Bentuk intent untuk SERP tanpa memecah frasa input user.
+
+    Frasa tetap dijaga dari sisi token berurutan, tetapi tidak dibungkus quote agar
+    request Jina tidak berubah menjadi query kompleks yang rawan 422.
+    """
     now = _as_jakarta(now)
     base = _strip_query_noise(primary_query) or default_query(now)
     phrase = _specific_query_phrase(base)
     if phrase:
-        return f'"{phrase}"'
+        return phrase
+    tokens = _specific_query_token_list(base)
+    if tokens:
+        return " ".join(tokens[:6])
     return base
 
 
-def source_scoped_query(primary_query: str, now: datetime | None = None, domains: tuple[str, ...] | list[str] | None = None) -> str:
-    """Paksa SERP mencari di domain berita, bukan platform sosial/video."""
+def source_scoped_query(primary_query: str, now: datetime | None = None, domains: tuple[str, ...] | list[str] | str | None = None) -> str:
+    """Buat query Jina yang sederhana dan aman dari 422.
+
+    Setiap request hanya memakai satu `site:domain`. Filter negatif sosial/video tidak
+    dikirim ke Jina; pemblokiran dilakukan deterministic di parser. Ini membuat bot
+    Telegram tidak gagal hanya karena Jina menolak sintaks query yang terlalu ramai.
+    """
     now = _as_jakarta(now)
     today = today_indonesia(now)
     base = _serp_query_intent(primary_query, now)
-    domain_filter = _domain_filter_query(tuple(domains or PUBLISHER_SEARCH_GROUPS[0]))
-    return _clean_text(
-        f"({domain_filter}) {base} {today} artikel berita terbaru {SOCIAL_NEGATIVE_QUERY}",
-        700,
-    )
+    domain_filter = _domain_filter_query(domains or PUBLISHER_SEARCH_GROUPS[0][0])
+    parts = [domain_filter, base, "berita", "hari ini", today]
+    return _jina_safe_query(" ".join(part for part in parts if part))
+
+
+def _jina_safe_query(query: str, *, limit: int = 260) -> str:
+    """Sanitasi defensif sebelum dikirim ke `s.jina.ai`.
+
+    Jina Search menerima query teks biasa. Operator kompleks, quote, kurung, dan
+    negative-site panjang tidak diperlukan karena validasi artikel sudah dilakukan
+    setelah respons diterima.
+    """
+    text = str(query or "")
+    text = re.sub(r"-site:\S+", " ", text)
+    text = JINA_QUERY_OPERATOR_RE.sub(" ", text)
+    text = text.replace('"', " ").replace("'", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > limit:
+        text = text[:limit].rsplit(" ", 1)[0].strip() or text[:limit].strip()
+    return text
+
+
+def _jina_retry_query(query: str, now: datetime | None = None) -> str:
+    """Query fallback saat Jina menolak request pertama dengan 422."""
+    now = _as_jakarta(now)
+    intent = _serp_query_intent(query, now)
+    # Hilangkan semua site: agar retry memakai query umum yang pendek.
+    intent = re.sub(r"\bsite:\S+", " ", intent, flags=re.IGNORECASE)
+    return _jina_safe_query(f"{intent} berita Indonesia {today_indonesia(now)}", limit=180)
 
 
 def fallback_queries(primary_query: str, now: datetime | None = None) -> list[str]:
-    """Buat kueri cadangan yang source-scoped agar SERP tidak lari ke sosial/video."""
+    """Buat kueri cadangan per-domain agar Jina tidak menerima OR/kurung kompleks."""
     now = _as_jakarta(now)
-    today = today_indonesia(now)
     base = _strip_query_noise(primary_query)
-    candidates = [
-        source_scoped_query(base, now, group) for group in PUBLISHER_SEARCH_GROUPS
-    ] + [
-        f"({_domain_filter_query(PREFERRED_SEARCH_DOMAINS[:8])}) berita nasional Indonesia terbaru {today} {SOCIAL_NEGATIVE_QUERY}",
-        f"({_domain_filter_query(PREFERRED_SEARCH_DOMAINS[:8])}) ekonomi teknologi politik kesehatan Indonesia {today} artikel {SOCIAL_NEGATIVE_QUERY}",
-    ]
+    # Interleave domain besar dan domain spesifik agar max_search_rounds kecil tetap layak.
+    domains = (
+        "kompas.com", "detik.com", "cnnindonesia.com", "cnbcindonesia.com", "tempo.co",
+        "antaranews.com", "liputan6.com", "bisnis.com", "katadata.co.id", "kontan.co.id",
+        "republika.co.id", "kumparan.com", "tirto.id", "suara.com", "okezone.com",
+    )
+    candidates = [source_scoped_query(base, now, domain) for domain in domains]
+    # Cadangan umum tetap sederhana, tanpa operator OR/negative-site. Parser akan
+    # membuang sosial/video/Google News kalau muncul.
+    candidates.append(_jina_safe_query(f"{_serp_query_intent(base, now)} berita Indonesia hari ini {today_indonesia(now)}"))
     unique: list[str] = []
     seen: set[str] = set()
     for candidate in candidates:
-        candidate = _clean_text(candidate, 700)
+        candidate = _jina_safe_query(candidate)
         key = candidate.casefold()
         if candidate and key not in seen:
             unique.append(candidate)
@@ -1674,13 +1733,31 @@ def fetch_raw_markdown(
         "X-Timeout": str(page_timeout),
         "User-Agent": "news-monitor-streamlit/4.1-fast",
     }
-    response = requests.get(
-        JINA_SEARCH_URL,
-        params={"q": query},
-        headers=headers,
-        timeout=request_timeout,
-    )
-    response.raise_for_status()
+    query = _jina_safe_query(query)
+
+    def do_request(search_query: str) -> requests.Response:
+        return requests.get(
+            JINA_SEARCH_URL,
+            params={"q": search_query},
+            headers=headers,
+            timeout=request_timeout,
+        )
+
+    response = do_request(query)
+    retried_after_422 = False
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as error:
+        status_code = getattr(error.response, "status_code", None) if error.response is not None else None
+        if status_code != 422:
+            raise
+        retry_query = _jina_retry_query(query, current_now)
+        if not retry_query or retry_query == query:
+            raise
+        response = do_request(retry_query)
+        response.raise_for_status()
+        query = retry_query
+        retried_after_422 = True
 
     raw_markdown = response.text.strip()
     if not raw_markdown:
@@ -1692,6 +1769,7 @@ def fetch_raw_markdown(
         "today_jakarta": today_indonesia(current_now),
         "content_type": response.headers.get("content-type", "tidak diketahui"),
         "response_format": "json_preferred",
+        "jina_retried_after_422": str(retried_after_422).lower(),
         "jina_respond_with": response_mode,
         "request_timeout_seconds": str(request_timeout),
         "jina_page_timeout_seconds": str(page_timeout),
@@ -1886,21 +1964,39 @@ def _fetch_rounds(
         all_queries = fallback_queries(primary_query, now)
         queries = all_queries[:round_limit]
         for index, search_query in enumerate(queries):
-            raw_markdown, round_metadata = fetch_raw_markdown(
-                api_key, query=search_query, timeout=timeout, now=now
-            )
+            try:
+                raw_markdown, round_metadata = fetch_raw_markdown(
+                    api_key, query=search_query, timeout=timeout, now=now
+                )
+            except requests.HTTPError as error:
+                status_code = getattr(error.response, "status_code", None) if error.response is not None else None
+                if status_code in {401, 403}:
+                    raise
+                metadata["last_jina_error"] = str(error)
+                raw_sections.append(
+                    f"# Respons pencarian Jina {index + 1}\n\nQuery: {search_query}\n\nERROR: {error}"
+                )
+                continue
+            except requests.RequestException as error:
+                metadata["last_jina_error"] = str(error)
+                raw_sections.append(
+                    f"# Respons pencarian Jina {index + 1}\n\nQuery: {search_query}\n\nERROR: {error}"
+                )
+                continue
             metadata.update({
                 "content_type": round_metadata.get("content_type", metadata.get("content_type", "")),
                 "response_format": round_metadata.get("response_format", metadata.get("response_format", "")),
+                "jina_retried_after_422": round_metadata.get("jina_retried_after_422", metadata.get("jina_retried_after_422", "false")),
                 "jina_respond_with": round_metadata.get("jina_respond_with", metadata.get("jina_respond_with", "")),
                 "request_timeout_seconds": round_metadata.get("request_timeout_seconds", metadata.get("request_timeout_seconds", "")),
                 "jina_page_timeout_seconds": round_metadata.get("jina_page_timeout_seconds", metadata.get("jina_page_timeout_seconds", "")),
             })
-            raw_sections.append(f"# Respons pencarian Jina {index + 1}\n\nQuery: {search_query}\n\n{raw_markdown}")
+            actual_query = round_metadata.get("query", search_query)
+            raw_sections.append(f"# Respons pencarian Jina {index + 1}\n\nQuery: {actual_query}\n\n{raw_markdown}")
             verified, stats = parse_search_response_details(
                 raw_markdown, round_metadata["fetched_at"], max_results
             )
-            parsed_rounds.append((verified, stats, search_query))
+            parsed_rounds.append((verified, stats, actual_query))
 
             combined_verified: list[dict[str, Any]] = [*_apply_quality_scores(rss_items, primary_query)]
             for items, _, item_query in parsed_rounds:
