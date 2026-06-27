@@ -1,4 +1,4 @@
-"""Pengambilan dan normalisasi hasil berita dari Jina Search."""
+"""Pengambilan, penyimpanan respons mentah, dan normalisasi hasil berita dari Jina Search."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -106,7 +106,7 @@ def _parse_markdown(text: str, detected_at: str) -> list[dict[str, str]]:
     link_pattern = re.compile(r"(?<!!)\[([^\]]{3,300})\]\((https?://[^\s)]+)\)")
     for match in link_pattern.finditer(text):
         title, url = match.groups()
-        start, end = match.span()
+        _, end = match.span()
         # Ringkasan biasanya berada dekat dengan tautan pada respons Markdown.
         context = text[end : end + 450]
         context = re.sub(r"\[[^\]]+\]\([^)]*\)", "", context)
@@ -139,7 +139,9 @@ def _deduplicate(items: list[dict[str, str]], limit: int) -> list[dict[str, str]
     return unique
 
 
-def parse_search_response(payload: str | dict[str, Any] | list[Any], detected_at: str, limit: int = 20) -> list[dict[str, str]]:
+def parse_search_response(
+    payload: str | dict[str, Any] | list[Any], detected_at: str, limit: int = 20
+) -> list[dict[str, str]]:
     """Ubah JSON atau Markdown dari Jina menjadi daftar artikel seragam."""
     parsed: Any = payload
     if isinstance(payload, str):
@@ -154,13 +156,16 @@ def parse_search_response(payload: str | dict[str, Any] | list[Any], detected_at
     return _deduplicate(items, limit)
 
 
-def fetch_news(
+def fetch_raw_markdown(
     api_key: str,
     query: str | None = None,
-    max_results: int = 20,
     timeout: int = 45,
-) -> tuple[list[dict[str, str]], dict[str, str]]:
-    """Panggil Jina Search dengan header X-Engine: direct dari permintaan pengguna."""
+) -> tuple[str, dict[str, str]]:
+    """Ambil respons Markdown mentah dari Jina Search dengan X-Engine: direct.
+
+    Respons tidak diringkas agar Streamlit dapat memperlihatkan bentuk asli seperti
+    `Title`, `URL Source`, deskripsi, daftar tautan, dan isi halaman hasil.
+    """
     if not api_key:
         raise ValueError("JINA_API_KEY belum diatur.")
 
@@ -169,8 +174,8 @@ def fetch_news(
     headers = {
         "Authorization": f"Bearer {api_key}",
         "X-Engine": "direct",
-        "Accept": "application/json, text/markdown;q=0.9, text/plain;q=0.8",
-        "User-Agent": "news-monitor-streamlit/1.0",
+        "Accept": "text/markdown, text/plain;q=0.9, application/json;q=0.8",
+        "User-Agent": "news-monitor-streamlit/1.1",
     }
     response = requests.get(
         JINA_SEARCH_URL,
@@ -180,18 +185,40 @@ def fetch_news(
     )
     response.raise_for_status()
 
-    detected_at = now.isoformat()
-    content_type = response.headers.get("content-type", "")
-    if "application/json" in content_type:
-        payload: str | dict[str, Any] | list[Any] = response.json()
-    else:
-        payload = response.text
+    raw_markdown = response.text.strip()
+    if not raw_markdown:
+        raise ValueError("Jina tidak mengembalikan isi respons.")
 
-    articles = parse_search_response(payload, detected_at, max_results)
     metadata = {
         "query": query,
-        "fetched_at": detected_at,
+        "fetched_at": now.isoformat(),
         "today_jakarta": today_indonesia(now),
-        "result_count": str(len(articles)),
+        "content_type": response.headers.get("content-type", "tidak diketahui"),
     }
+    return raw_markdown, metadata
+
+
+def fetch_news(
+    api_key: str,
+    query: str | None = None,
+    max_results: int = 20,
+    timeout: int = 45,
+) -> tuple[list[dict[str, str]], dict[str, str]]:
+    """Ambil berita dan normalisasi artikelnya untuk dashboard dan Telegram."""
+    raw_markdown, metadata = fetch_raw_markdown(api_key, query=query, timeout=timeout)
+    articles = parse_search_response(raw_markdown, metadata["fetched_at"], max_results)
+    metadata["result_count"] = str(len(articles))
     return articles, metadata
+
+
+def fetch_news_with_raw(
+    api_key: str,
+    query: str | None = None,
+    max_results: int = 20,
+    timeout: int = 45,
+) -> tuple[list[dict[str, str]], dict[str, str], str]:
+    """Varian untuk Streamlit: daftar artikel sekaligus respons Markdown persis dari Jina."""
+    raw_markdown, metadata = fetch_raw_markdown(api_key, query=query, timeout=timeout)
+    articles = parse_search_response(raw_markdown, metadata["fetched_at"], max_results)
+    metadata["result_count"] = str(len(articles))
+    return articles, metadata, raw_markdown

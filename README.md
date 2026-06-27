@@ -7,6 +7,7 @@ Aplikasi ini mengambil hasil pencarian berita melalui Jina Search, menampilkan h
 - Query otomatis memakai tanggal **Asia/Jakarta**.
 - Header `Authorization: Bearer ...` dan `X-Engine: direct` diterapkan saat meminta Jina Search.
 - Hasil dinormalisasi dari respons JSON atau Markdown.
+- Pencarian langsung di Streamlit memperlihatkan respons Markdown mentah Jina apa adanya, termasuk format `Title`, `URL Source`, deskripsi, dan tautan.
 - Artikel dideduplikasi berdasarkan URL dan judul.
 - Telegram hanya menerima artikel yang belum pernah diberi notifikasi.
 - Riwayat dan hasil terbaru disimpan di folder `data/` agar dapat dipakai halaman Streamlit.
@@ -50,7 +51,7 @@ export TELEGRAM_CHAT_ID="chat_id_anda"
 python worker.py
 ```
 
-Untuk dashboard lokal, salin `.streamlit/secrets.toml.example` menjadi `.streamlit/secrets.toml`, isi `JINA_API_KEY`, lalu jalankan:
+Untuk dashboard lokal, salin `.streamlit/secrets.toml.example` menjadi `.streamlit/secrets.toml`, isi `JINA_API_KEY`, lalu jalankan. Tombol **Cari berita terbaru** menampilkan daftar artikel dan respons Markdown mentah dari Jina di halaman yang sama:
 
 ```bash
 streamlit run app.py
@@ -90,5 +91,6 @@ python -m unittest discover -s tests -v
 
 - GitHub Actions berbasis jadwal dapat mengalami keterlambatan. Dashboard menampilkan waktu pemeriksaan terakhir agar keterlambatan terlihat.
 - Pencarian memakai tanggal hari ini untuk meningkatkan relevansi, tetapi tanggal publikasi tiap artikel bergantung pada metadata yang dikembalikan sumber dan mesin pencari. Periksa halaman asli untuk konfirmasi.
+- Respons Markdown mentah dapat sangat panjang. Dashboard menaruhnya di sesi browser saat pencarian langsung dan tidak menyimpannya ke GitHub agar repository tidak cepat membesar.
 - Batasi `NOTIFICATION_LIMIT` agar Telegram tidak menerima terlalu banyak pesan ketika pertama kali dijalankan.
 - Putar ulang atau cabut token yang pernah dibagikan di chat, commit, screenshot, atau file publik.

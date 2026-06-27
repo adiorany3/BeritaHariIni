@@ -9,7 +9,7 @@ import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
-from news_service import default_query, fetch_news
+from news_service import default_query, fetch_news_with_raw
 from storage import read_json
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -57,6 +57,33 @@ def articles_frame(articles: list[dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def display_raw_response(raw_markdown: str, metadata: dict[str, str]) -> None:
+    """Perlihatkan respons Jina apa adanya tanpa merender gambar atau tautan eksternal."""
+    if not raw_markdown:
+        return
+
+    st.divider()
+    st.subheader("Respons Markdown mentah dari Jina")
+    st.caption(
+        "Ditampilkan apa adanya agar format Title, URL Source, deskripsi, tautan, "
+        "dan isi hasil tetap terlihat. Panel ini tidak merender gambar atau iklan dari sumber."
+    )
+    first_line = raw_markdown.splitlines()[0] if raw_markdown.splitlines() else "-"
+    left, middle, right = st.columns(3)
+    left.metric("Baris respons", len(raw_markdown.splitlines()))
+    middle.metric("Ukuran", f"{len(raw_markdown):,} karakter")
+    right.metric("Content-Type", metadata.get("content_type", "-"))
+    st.code(raw_markdown, language="markdown", wrap_lines=True)
+    st.download_button(
+        "Unduh respons Markdown",
+        data=raw_markdown,
+        file_name="respons-jina-berita.md",
+        mime="text/markdown",
+        use_container_width=False,
+    )
+    st.caption(f"Baris pertama: {first_line[:180]}")
+
+
 st.title("📰 Monitor Berita Hari Ini")
 st.caption("Data diperbarui oleh GitHub Actions. Halaman ini memuat ulang otomatis setiap 5 menit.")
 
@@ -76,8 +103,11 @@ left.metric("Artikel terdeteksi", len(articles))
 middle.metric("Tanggal pencarian", metadata.get("today_jakarta", "Belum ada"))
 right.metric("Pembaruan terakhir", metadata.get("fetched_at", "Belum ada"))
 
-with st.expander("Cari langsung dari Jina Search", expanded=False):
-    st.caption("Pencarian ini hanya menampilkan hasil di browser. Notifikasi Telegram tetap dikelola oleh workflow GitHub.")
+with st.expander("Cari langsung dari Jina Search", expanded=True):
+    st.caption(
+        "Pencarian langsung akan menampilkan tabel artikel dan respons Markdown Jina secara utuh. "
+        "Notifikasi Telegram tetap dikelola oleh workflow GitHub."
+    )
     query = st.text_input("Kata kunci", value=default_query())
     if st.button("Cari berita terbaru", type="primary"):
         api_key = get_secret("JINA_API_KEY")
@@ -85,16 +115,37 @@ with st.expander("Cari langsung dari Jina Search", expanded=False):
             st.error("Atur JINA_API_KEY di Streamlit Secrets untuk menjalankan pencarian langsung.")
         else:
             try:
-                with st.spinner("Mengambil hasil terbaru..."):
-                    live_articles, live_metadata = fetch_news(api_key, query=query, max_results=20)
-                st.success(f"Ditemukan {len(live_articles)} artikel. Waktu cek: {live_metadata['fetched_at']}")
-                st.dataframe(articles_frame(live_articles), use_container_width=True, hide_index=True)
+                with st.spinner("Mengambil respons terbaru dari Jina..."):
+                    live_articles, live_metadata, raw_markdown = fetch_news_with_raw(
+                        api_key, query=query, max_results=20
+                    )
+                st.session_state["live_articles"] = live_articles
+                st.session_state["live_metadata"] = live_metadata
+                st.session_state["live_raw_markdown"] = raw_markdown
+                st.success(
+                    f"Ditemukan {len(live_articles)} artikel. "
+                    f"Waktu cek: {live_metadata['fetched_at']}"
+                )
             except requests.RequestException as error:
                 st.error(f"Permintaan ke Jina gagal: {error}")
             except ValueError as error:
                 st.error(str(error))
 
-st.subheader("Hasil terakhir")
+    live_articles = st.session_state.get("live_articles", [])
+    live_metadata = st.session_state.get("live_metadata", {})
+    raw_markdown = st.session_state.get("live_raw_markdown", "")
+    if live_articles:
+        st.subheader("Artikel yang terdeteksi dari pencarian langsung")
+        st.dataframe(
+            articles_frame(live_articles),
+            use_container_width=True,
+            hide_index=True,
+            column_config={"Tautan": st.column_config.LinkColumn("Tautan", display_text="Buka artikel")},
+        )
+    if raw_markdown:
+        display_raw_response(raw_markdown, live_metadata)
+
+st.subheader("Hasil terakhir dari GitHub Actions")
 if not articles:
     st.info("Belum ada data. Jalankan workflow GitHub Actions secara manual atau tunggu jadwal pertama.")
 else:
