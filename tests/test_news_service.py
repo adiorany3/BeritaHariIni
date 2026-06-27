@@ -204,6 +204,13 @@ Ringkasan berita yang membahas inovasi pendidikan digital di Indonesia.
         self.assertIn("-site:youtube.com", query)
         self.assertNotIn("Instagram TikTok", query)
 
+    def test_multi_word_search_is_quoted_as_phrase_for_jina(self) -> None:
+        query = source_scoped_query("berita harga telur hari ini", datetime(2026, 6, 27, 10, 0))
+        self.assertIn('"harga telur"', query)
+        self.assertIn("site:kompas.com", query)
+        self.assertIn("27 Juni 2026", query)
+        self.assertNotIn("berita harga telur hari ini 27 Juni", query)
+
     def test_user_supplied_social_heavy_jina_payload_returns_no_articles(self) -> None:
         payload = {
             "code": 200,
@@ -238,6 +245,60 @@ Ringkasan tentang teknologi Indonesia hari ini.
         self.assertEqual(metadata["max_search_rounds"], "2")
         self.assertEqual(metadata["search_rounds"], "2")
         self.assertEqual(len(articles), 1)
+
+    def test_multi_word_search_requires_all_terms_not_or(self) -> None:
+        rss_items = [
+            {
+                "id": "rss-harga-emas",
+                "title": "Harga Emas Hari Ini Naik di Pasar",
+                "url": "https://www.kompas.com/read/2026/06/27/120000/harga-emas-hari-ini-naik",
+                "source": "kompas.com",
+                "source_type": "publisher",
+                "summary": "Artikel hanya membahas harga emas dan logam mulia.",
+                "published_at": "2026-06-27T12:00:00",
+                "time_status": "verified_today",
+                "category_key": "ekonomi",
+                "category": "Ekonomi & Bisnis",
+            },
+            {
+                "id": "rss-stok-telur",
+                "title": "Stok Telur Melimpah di Pasar Tradisional",
+                "url": "https://www.detik.com/read/2026/06/27/120000/stok-telur-melimpah",
+                "source": "detik.com",
+                "source_type": "publisher",
+                "summary": "Artikel hanya membahas pasokan dan distribusi telur.",
+                "published_at": "2026-06-27T12:00:00",
+                "time_status": "verified_today",
+                "category_key": "ekonomi",
+                "category": "Ekonomi & Bisnis",
+            },
+            {
+                "id": "rss-harga-telur",
+                "title": "Harga Telur Ayam Naik di Pasar Jakarta",
+                "url": "https://www.cnbcindonesia.com/news/20260627120000/harga-telur-ayam-naik",
+                "source": "cnbcindonesia.com",
+                "source_type": "publisher",
+                "summary": "Pedagang melaporkan harga telur ayam naik hari ini di sejumlah pasar.",
+                "published_at": "2026-06-27T12:00:00",
+                "time_status": "verified_today",
+                "category_key": "ekonomi",
+                "category": "Ekonomi & Bisnis",
+            },
+        ]
+        with patch.dict(os.environ, {"NEWS_MAX_SEARCH_ROUNDS": "0", "NEWS_ENABLE_RSS": "1"}, clear=False):
+            with patch("news_service.jakarta_now", return_value=datetime(2026, 6, 27, 14, 0)):
+                with patch("news_service.fetch_rss_articles", return_value=(rss_items, {
+                    "rss_enabled": "true",
+                    "rss_articles": "3",
+                    "rss_feeds_checked": "1",
+                }, "RSS test")):
+                    articles, metadata = fetch_news("token", query="harga telur", max_results=20)
+        self.assertEqual(metadata["strict_query_relevance"], "true")
+        self.assertEqual(metadata["query_phrase"], "harga telur")
+        self.assertEqual(metadata["search_rounds"], "0")
+        self.assertEqual([item["title"] for item in articles], [
+            "Harga Telur Ayam Naik di Pasar Jakarta"
+        ])
 
     def test_specific_search_does_not_stop_at_static_rss_results(self) -> None:
         rss_items = [

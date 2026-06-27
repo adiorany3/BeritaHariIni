@@ -277,6 +277,13 @@ CATEGORY_SEED_TERMS = {
     "kesehatan", "hiburan", "politik", "hukum", "kriminal", "internasional",
     "lingkungan", "cuaca", "travel", "wisata", "kuliner", "lifestyle",
 }
+QUERY_STOPWORDS = {
+    "berita", "terbaru", "terkini", "hari", "ini", "indonesia", "dan", "atau",
+    "yang", "untuk", "dengan", "dari", "pada", "dalam", "ke", "di", "akan",
+    "the", "a", "an", "of", "to", "today", "artikel", "kabar", "update",
+    "januari", "februari", "maret", "april", "mei", "juni", "juli", "agustus",
+    "september", "oktober", "november", "desember",
+}
 
 
 HEADING_LINK_RE = re.compile(
@@ -382,7 +389,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 def configured_max_search_rounds() -> int:
     """Jumlah pencarian Jina maksimal per siklus. Default dibuat rendah agar respons cepat."""
-    return _env_int("NEWS_MAX_SEARCH_ROUNDS", DEFAULT_MAX_SEARCH_ROUNDS, minimum=1, maximum=6)
+    return _env_int("NEWS_MAX_SEARCH_ROUNDS", DEFAULT_MAX_SEARCH_ROUNDS, minimum=0, maximum=6)
 
 
 def configured_enable_rss() -> bool:
@@ -963,18 +970,48 @@ def _parse_markdown(
 
 
 
+def _normalise_search_text(text: str) -> str:
+    """Samakan teks agar pencocokan frasa tidak mudah rusak oleh tanda baca."""
+    lowered = text.casefold()
+    lowered = re.sub(r"[^a-zA-ZÀ-ÿ0-9]+", " ", lowered)
+    return re.sub(r"\s+", " ", lowered).strip()
+
+
+def _meaningful_query_tokens(query: str) -> list[str]:
+    """Token kueri dalam urutan asli, bukan set.
+
+    Ini penting untuk kueri seperti "harga telur": frasa tersebut adalah intent utuh,
+    bukan dua pencarian longgar "harga" OR "telur".
+    """
+    cleaned = _strip_query_noise(query)
+    tokens = re.findall(r"[a-zA-ZÀ-ÿ0-9]{2,}", cleaned.casefold())
+    return [
+        token for token in tokens
+        if token not in QUERY_STOPWORDS
+        and token not in GENERIC_QUERY_TERMS
+        and not token.isdigit()
+        and not re.fullmatch(r"20\d{2}", token)
+        and token not in {month.casefold() for month in MONTHS_ID}
+    ]
+
+
+def _specific_query_token_list(query: str) -> list[str]:
+    """Token niat pencarian yang benar-benar berasal dari input pengguna."""
+    tokens = _meaningful_query_tokens(query)
+    if len(set(tokens) & CATEGORY_SEED_TERMS) >= 6:
+        return []
+    unique: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        if token not in seen:
+            unique.append(token)
+            seen.add(token)
+    return unique
+
+
 def _query_terms(query: str) -> set[str]:
     """Ambil kata bermakna dari kueri untuk menilai relevansi hasil."""
-    stopwords = {
-        "berita", "terbaru", "hari", "ini", "indonesia", "dan", "atau", "yang",
-        "untuk", "dengan", "dari", "pada", "dalam", "the", "a", "an", "of", "to",
-        "januari", "februari", "maret", "april", "mei", "juni", "juli", "agustus",
-        "september", "oktober", "november", "desember",
-    }
-    return {
-        term for term in re.findall(r"[a-zA-ZÀ-ÿ0-9]{4,}", query.casefold())
-        if term not in stopwords and not term.isdigit()
-    }
+    return set(_specific_query_token_list(query))
 
 
 def _specific_query_terms(query: str) -> set[str]:
@@ -984,36 +1021,62 @@ def _specific_query_terms(query: str) -> set[str]:
     search, term seperti "berita", "hari ini", tanggal, dan daftar kategori default
     tidak boleh membuat RSS umum terlihat relevan secara palsu.
     """
-    terms = _query_terms(query)
-    specific = {
-        term for term in terms
-        if term not in GENERIC_QUERY_TERMS
-        and not re.fullmatch(r"20\d{2}", term)
-        and term not in {month.casefold() for month in MONTHS_ID}
-    }
-    # Bila kueri memuat terlalu banyak kategori sekaligus, itu biasanya query default
-    # dashboard, bukan pencarian spesifik dari pengguna.
-    if len(specific & CATEGORY_SEED_TERMS) >= 6:
-        return set()
-    return specific
+    return set(_specific_query_token_list(query))
+
+
+def _specific_query_phrase(query: str) -> str:
+    """Frasa pencarian utama, misalnya "harga telur".
+
+    Frasa ini dipakai sebagai sinyal utama untuk SERP dan scoring. Token individual
+    hanya menjadi pendukung setelah semua term cocok, bukan syarat OR yang longgar.
+    """
+    tokens = _specific_query_token_list(query)
+    if len(tokens) < 2:
+        return ""
+    return " ".join(tokens)
 
 
 def _query_is_specific(query: str) -> bool:
     return bool(_specific_query_terms(query))
 
 
+def _query_match_level(text: str, query: str) -> str:
+    """Kembalikan level kecocokan intent: exact_phrase, all_terms, partial, none."""
+    tokens = _specific_query_token_list(query)
+    if not tokens:
+        return "none"
+
+    normalised_text = _normalise_search_text(text)
+    if not normalised_text:
+        return "none"
+
+    phrase = _specific_query_phrase(query)
+    if phrase and phrase in normalised_text:
+        return "exact_phrase"
+
+    words = set(normalised_text.split())
+    matched = [token for token in tokens if token in words or token in normalised_text]
+    if len(matched) == len(tokens):
+        return "all_terms"
+    if matched:
+        return "partial"
+    return "none"
+
+
 def _matches_query_intent(item: dict[str, Any], query: str) -> bool:
-    """True bila artikel sesuai niat search; kueri umum tidak difilter ketat."""
-    terms = _specific_query_terms(query)
-    if not terms:
+    """True bila artikel sesuai niat search; kueri umum tidak difilter ketat.
+
+    Untuk kueri multi-kata, semua term harus cocok, dan frasa utuh diberi prioritas.
+    Contoh: "harga telur" tidak boleh lolos hanya karena judul berisi "harga" saja
+    atau "telur" saja.
+    """
+    if not _query_is_specific(query):
         return True
     combined = " ".join(
         str(item.get(key, ""))
         for key in ("title", "summary", "url", "source", "category", "category_key")
-    ).casefold()
-    matched = {term for term in terms if term in combined}
-    required = 1 if len(terms) <= 2 else 2 if len(terms) <= 5 else 3
-    return len(matched) >= required
+    )
+    return _query_match_level(combined, query) in {"exact_phrase", "all_terms"}
 
 
 def _path_article_score(url: str) -> tuple[int, list[str]]:
@@ -1120,12 +1183,18 @@ def score_article_quality(
 
     terms = _specific_query_terms(query)
     if terms:
-        matched_terms = {term for term in terms if term in combined}
-        if matched_terms:
-            score += min(18, 5 * len(matched_terms))
-            reasons.append("relevan dengan kueri")
+        match_level = _query_match_level(combined, query)
+        if match_level == "exact_phrase":
+            score += 20
+            reasons.append("frasa search cocok")
+        elif match_level == "all_terms":
+            score += 12
+            reasons.append("semua kata kunci search cocok")
+        elif match_level == "partial":
+            score -= 18
+            reasons.append("hanya cocok sebagian dengan search")
         else:
-            score -= 28
+            score -= 32
             reasons.append("tidak sesuai kata kunci search")
 
     if category_key == "lainnya":
@@ -1275,11 +1344,21 @@ def _strip_query_noise(query: str) -> str:
     return _clean_text(cleaned, 360)
 
 
+def _serp_query_intent(primary_query: str, now: datetime | None = None) -> str:
+    """Bentuk kueri untuk SERP tanpa memecah frasa input user."""
+    now = _as_jakarta(now)
+    base = _strip_query_noise(primary_query) or default_query(now)
+    phrase = _specific_query_phrase(base)
+    if phrase:
+        return f'"{phrase}"'
+    return base
+
+
 def source_scoped_query(primary_query: str, now: datetime | None = None, domains: tuple[str, ...] | list[str] | None = None) -> str:
     """Paksa SERP mencari di domain berita, bukan platform sosial/video."""
     now = _as_jakarta(now)
     today = today_indonesia(now)
-    base = _strip_query_noise(primary_query) or default_query(now)
+    base = _serp_query_intent(primary_query, now)
     domain_filter = _domain_filter_query(tuple(domains or PUBLISHER_SEARCH_GROUPS[0]))
     return _clean_text(
         f"({domain_filter}) {base} {today} artikel berita terbaru {SOCIAL_NEGATIVE_QUERY}",
@@ -1548,7 +1627,8 @@ def _fetch_rounds(
 
     # Bila RSS resmi sudah cukup, jangan panggil Jina sama sekali. Ini jauh lebih cepat dan
     # menghindari SERP sosial/video yang kurang relevan.
-    round_limit = max(0, min(max_search_rounds or configured_max_search_rounds(), len(PUBLISHER_SEARCH_GROUPS)))
+    configured_round_limit = configured_max_search_rounds() if max_search_rounds is None else max_search_rounds
+    round_limit = max(0, min(configured_round_limit, len(PUBLISHER_SEARCH_GROUPS)))
     if len(articles) < target_results and round_limit > 0:
         if not api_key:
             raise ValueError("JINA_API_KEY belum diatur dan hasil RSS belum cukup.")
@@ -1608,7 +1688,8 @@ def _fetch_rounds(
             "max_search_rounds": str(round_limit),
             "target_results_for_fast_stop": str(target_results),
             "strict_query_relevance": "true" if _query_is_specific(primary_query) else "false",
-            "query_terms": ", ".join(sorted(_specific_query_terms(primary_query))),
+            "query_terms": ", ".join(_specific_query_token_list(primary_query)),
+            "query_phrase": _specific_query_phrase(primary_query),
             "result_mode": "verified_today" if verified_count else (
                 "needs_time_verification" if used_unverified else "none"
             ),

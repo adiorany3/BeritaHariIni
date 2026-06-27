@@ -33,7 +33,7 @@ Versi ini tidak lagi menampilkan hasil tersimpan dari workflow dan worker tidak 
   - kategori,
   - relevansi terhadap kata kunci,
   - sinyal non-berita/clickbait.
-- Untuk query spesifik di kolom search, relevansi sekarang menjadi **filter wajib**, bukan sekadar bonus skor. Ini mencegah hasil RSS umum tampil statis ketika pengguna mencari topik tertentu.
+- Untuk query spesifik di kolom search, relevansi sekarang menjadi **filter wajib**, bukan sekadar bonus skor. Kueri multi-kata seperti `harga telur` diperlakukan sebagai **frasa/intent utuh**, bukan pencarian longgar `harga` OR `telur`. Ini mencegah hasil RSS umum atau hasil yang hanya cocok sebagian tampil statis ketika pengguna mencari topik tertentu.
 - Sosial/video **diblokir secara default**. Jika benar-benar ingin menerima konten sosial individual, aktifkan `NEWS_ALLOW_SOCIAL=1`, tetapi ini tidak disarankan untuk mode berita bermutu.
 - Panel audit menampilkan sumber mentah RSS/Jina sebagai kode agar gambar, HTML, dan iklan tidak dimuat.
 
@@ -101,7 +101,7 @@ NEWS_ALLOW_SOCIAL = "0"
 | `NEWS_ENABLE_RSS` | `1` | Cek RSS publisher resmi sebelum Jina. Matikan hanya untuk debug. |
 | `NEWS_MAX_RSS_FEEDS` | `8` | Jumlah feed RSS yang dicek per siklus. |
 | `NEWS_RSS_TIMEOUT` | `4` | Timeout per feed RSS. Dibuat pendek agar tidak menunggu sumber lambat. |
-| `NEWS_MAX_SEARCH_ROUNDS` | `2` | Batas query Jina fallback per siklus. |
+| `NEWS_MAX_SEARCH_ROUNDS` | `2` | Batas query Jina fallback per siklus. Isi `0` untuk mematikan Jina fallback saat debug. |
 | `NEWS_REQUEST_TIMEOUT` | `25` | Timeout HTTP client untuk Jina. |
 | `JINA_PAGE_TIMEOUT` | `12` | Header `X-Timeout` untuk Jina. |
 | `JINA_RESPOND_WITH` | `no-content` | Mode cepat. Gunakan `markdown` hanya untuk audit lebih lengkap. |
