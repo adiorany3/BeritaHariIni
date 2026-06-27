@@ -30,6 +30,7 @@ CONFIG_ENV_NAMES: tuple[str, ...] = (
     "NEWS_MAX_ARTICLE_SCRAPES",
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_ALLOWED_CHAT_IDS",
+    "TELEGRAM_BROADCAST_CHAT_IDS",
     "TELEGRAM_NEWS_LIMIT",
     "TELEGRAM_NEWS_TIMEOUT",
     "TELEGRAM_MAX_SEARCH_ROUNDS",
@@ -37,6 +38,9 @@ CONFIG_ENV_NAMES: tuple[str, ...] = (
     "TELEGRAM_AUTO_START",
     "TELEGRAM_DELETE_WEBHOOK_ON_START",
     "TELEGRAM_DROP_PENDING_UPDATES",
+    "WORKER_SEND_TELEGRAM",
+    "WORKER_REQUIRE_TELEGRAM",
+    "WORKER_TELEGRAM_TITLE",
     "LOG_LEVEL",
 )
 
@@ -46,6 +50,7 @@ SPECIAL_SECTION_ALIASES: dict[str, tuple[tuple[str, str], ...]] = {
     "JINA_RESPOND_WITH": (("jina", "respond_with"),),
     "TELEGRAM_BOT_TOKEN": (("telegram", "bot_token"), ("telegram", "token")),
     "TELEGRAM_ALLOWED_CHAT_IDS": (("telegram", "allowed_chat_ids"), ("telegram", "chat_ids")),
+    "TELEGRAM_BROADCAST_CHAT_IDS": (("telegram", "broadcast_chat_ids"), ("telegram", "chat_ids"), ("telegram", "allowed_chat_ids")),
     "TELEGRAM_NEWS_LIMIT": (("telegram", "news_limit"),),
     "TELEGRAM_NEWS_TIMEOUT": (("telegram", "news_timeout"),),
     "TELEGRAM_MAX_SEARCH_ROUNDS": (("telegram", "max_search_rounds"),),
@@ -55,6 +60,9 @@ SPECIAL_SECTION_ALIASES: dict[str, tuple[tuple[str, str], ...]] = {
     "TELEGRAM_DROP_PENDING_UPDATES": (("telegram", "drop_pending_updates"),),
     "NEWS_QUERY": (("news", "query"),),
     "MAX_RESULTS": (("news", "max_results"),),
+    "WORKER_SEND_TELEGRAM": (("worker", "send_telegram"),),
+    "WORKER_REQUIRE_TELEGRAM": (("worker", "require_telegram"),),
+    "WORKER_TELEGRAM_TITLE": (("worker", "telegram_title"),),
     "LOG_LEVEL": (("app", "log_level"),),
 }
 

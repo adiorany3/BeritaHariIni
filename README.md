@@ -1,10 +1,10 @@
 # Monitor Berita Hari Ini dengan Streamlit
 
-Aplikasi ini mencari berita terbaru dengan pendekatan **RSS-first, Jina Search fallback, lalu scrape informasi artikel**. RSS penerbit resmi dicek lebih dulu karena biasanya lebih cepat, lebih bersih, dan langsung berisi URL artikel. Jika hasil RSS belum cukup, aplikasi baru memakai Jina Search (`s.jina.ai/?q=`) dengan kueri sederhana per-domain media berita tepercaya. Sosial/video tetap diblokir di parser agar query tidak terlalu kompleks dan tidak memicu error 422 dari Jina. Setelah artikel akhir dipilih, aplikasi memakai Jina Reader (`r.jina.ai/<url>`) untuk mengambil informasi utama dari isi artikel. Link asli tetap ditampilkan agar pengguna bisa membaca berita lengkap di sumbernya bila diperlukan. Selain dashboard Streamlit, versi ini juga menyediakan **Telegram Bot interaktif**: user mengirim tema, bot membalas judul, ringkasan, dan link berita asli.
+Aplikasi ini mencari berita terbaru dengan pendekatan **RSS-first, Jina Search fallback, lalu scrape informasi artikel**. RSS penerbit resmi dicek lebih dulu karena biasanya lebih cepat, lebih bersih, dan langsung berisi URL artikel. Jika hasil RSS belum cukup, aplikasi baru memakai Jina Search (`s.jina.ai/?q=`) dengan kueri sederhana per-domain media berita tepercaya. Sosial/video tetap diblokir di parser agar query tidak terlalu kompleks dan tidak memicu error 422 dari Jina. Setelah artikel akhir dipilih, aplikasi memakai Jina Reader (`r.jina.ai/<url>`) untuk mengambil informasi utama dari isi artikel. Link asli tetap ditampilkan agar pengguna bisa membaca berita lengkap di sumbernya bila diperlukan. Selain dashboard Streamlit, versi ini juga menyediakan **Telegram Bot interaktif** dan **worker broadcast pagi**: user bisa mengirim tema, atau GitHub Actions bisa mengirim digest berita terbaru setiap pagi ke chat Telegram.
 
 Tujuan versi ini: menghasilkan berita yang **bermutu, relevan, informatif, dan bukan sekadar kumpulan link acak**.
 
-Versi ini tidak lagi menampilkan hasil tersimpan dari workflow. Telegram sekarang bersifat **interaktif**, bukan broadcast otomatis: bot hanya mencari berita ketika user mengirim tema/keyword.
+Versi ini tidak lagi menampilkan hasil tersimpan dari workflow. Telegram mendukung dua mode: **interaktif** lewat `telegram_bot.py` saat user mengirim tema/keyword, dan **broadcast pagi terjadwal** lewat `worker.py` + GitHub Actions.
 
 ## Fitur utama
 
@@ -39,6 +39,7 @@ Versi ini tidak lagi menampilkan hasil tersimpan dari workflow. Telegram sekaran
 - Panel audit menampilkan sumber mentah RSS/Jina sebagai kode agar gambar, HTML, dan iklan tidak dimuat.
 - Link asli tetap ditampilkan pada kartu sebagai tombol **Buka berita asli**, sehingga ringkasan berfungsi sebagai preview dan pengguna tetap bisa membuka sumber lengkap.
 - **Telegram Bot interaktif** tersedia lewat `telegram_bot.py`: kirim tema seperti `harga telur`, lalu bot membalas daftar judul, ringkasan/informasi utama, dan link berita asli.
+- **Broadcast pagi Telegram** tersedia lewat `worker.py` dan workflow `.github/workflows/morning-news.yml`: GitHub Actions menjalankan worker setiap pagi dan mengirim digest ke chat Telegram yang Anda tentukan.
 
 ## Struktur proyek
 
@@ -46,12 +47,14 @@ Versi ini tidak lagi menampilkan hasil tersimpan dari workflow. Telegram sekaran
 .
 ├── data/
 ├── tests/
+├── .github/workflows/morning-news.yml
 ├── .streamlit/secrets.toml.example
 ├── app.py
 ├── config.py
 ├── news_service.py
 ├── storage.py
 ├── telegram_bot.py
+├── telegram_chat_id.py
 ├── telegram_runtime.py
 ├── worker.py
 └── requirements.txt
@@ -160,6 +163,72 @@ Jika `TELEGRAM_ALLOWED_CHAT_IDS` kosong, semua chat yang menemukan bot dapat men
 | `TELEGRAM_DELETE_WEBHOOK_ON_START` | `1` | Matikan webhook saat polling start. Penting karena Telegram tidak mengirim update ke polling bila webhook masih aktif. |
 | `TELEGRAM_DROP_PENDING_UPDATES` | `0` | Jika `1`, update lama di antrean Telegram dibuang saat deleteWebhook. |
 
+### Broadcast pagi via GitHub Actions
+
+Workflow `.github/workflows/morning-news.yml` menjalankan `python worker.py` setiap hari pukul **07:15 Asia/Jakarta**. Worker akan:
+
+1. mengambil berita terbaru hari ini,
+2. membuat ringkasan/informasi utama,
+3. mengirim judul + ringkasan + link asli ke Telegram.
+
+Secret GitHub yang wajib dibuat:
+
+| Secret | Isi |
+| --- | --- |
+| `JINA_API_KEY` | API key Jina Reader/Search. |
+| `TELEGRAM_BOT_TOKEN` | Token bot dari @BotFather. |
+| `TELEGRAM_BROADCAST_CHAT_IDS` | Satu atau beberapa chat ID tujuan, contoh `123456789` atau `123456789,-100987654321`. |
+
+
+Cara mendapatkan chat ID:
+
+1. Kirim `/start` atau pesan apa pun ke bot dari akun/grup tujuan.
+2. Jalankan lokal:
+
+```bash
+export TELEGRAM_BOT_TOKEN="token_bot_dari_botfather"
+python telegram_chat_id.py
+```
+
+3. Salin nilai `chat_id=...` ke GitHub Secret `TELEGRAM_BROADCAST_CHAT_IDS`.
+
+Repository Variables opsional:
+
+| Variable | Contoh | Fungsi |
+| --- | --- | --- |
+| `NEWS_QUERY` | kosong / `ekonomi indonesia` | Tema harian. Kosong berarti berita terbaru umum. |
+| `WORKER_TELEGRAM_TITLE` | `Berita terbaru pagi ini` | Judul header pesan Telegram. |
+| `TELEGRAM_NEWS_LIMIT` | `5` | Jumlah artikel dalam pesan pagi. |
+| `NEWS_MAX_SEARCH_ROUNDS` | `2` | Batas fallback Jina. |
+| `MAX_RESULTS` | `10` | Jumlah kandidat artikel yang diproses worker. |
+
+Untuk mengubah jam, edit bagian workflow:
+
+```yaml
+schedule:
+  - cron: "15 7 * * *"
+    timezone: "Asia/Jakarta"
+```
+
+Jika akun/repo Anda belum mendukung `timezone`, ganti menjadi UTC manual. Contoh 07:15 WIB = 00:15 UTC:
+
+```yaml
+schedule:
+  - cron: "15 0 * * *"
+```
+
+Cara tes langsung tanpa menunggu besok: buka tab **Actions** → pilih **Morning News Telegram** → klik **Run workflow**.
+
+Konfigurasi worker terkait Telegram:
+
+| Variable | Default | Fungsi |
+| --- | ---: | --- |
+| `TELEGRAM_BROADCAST_CHAT_IDS` | kosong | Chat ID tujuan broadcast pagi. Fallback ke `TELEGRAM_ALLOWED_CHAT_IDS` jika kosong. |
+| `WORKER_SEND_TELEGRAM` | otomatis | `1` untuk paksa kirim Telegram; `0` untuk hanya menyimpan JSON. |
+| `WORKER_REQUIRE_TELEGRAM` | `0` | Jika `1`, workflow gagal bila token/chat ID belum diatur. Workflow GitHub default memakai `1`. |
+| `WORKER_TELEGRAM_TITLE` | query / `Berita terbaru pagi ini` | Header pesan digest Telegram. |
+
+
 ## Deploy di Streamlit Community Cloud
 
 1. Buat repository baru, lalu unggah isi proyek ini.
@@ -190,6 +259,8 @@ page_timeout = "12"
 [telegram]
 bot_token = "token_bot_dari_botfather"
 allowed_chat_ids = [123456789]
+# Dipakai untuk broadcast pagi via worker/GitHub Actions.
+broadcast_chat_ids = [123456789]
 news_limit = 5
 news_timeout = 25
 max_search_rounds = 2
@@ -199,6 +270,11 @@ auto_start = true
 # Wajib untuk long polling jika token pernah dipasang webhook.
 delete_webhook_on_start = true
 drop_pending_updates = false
+
+[worker]
+send_telegram = true
+require_telegram = true
+telegram_title = "Berita terbaru pagi ini"
 ```
 
 Aplikasi juga masih mendukung format root-level lama seperti `NEWS_ENABLE_RSS = "1"` atau `TELEGRAM_BOT_TOKEN = "..."`. Namun format sectioned `[news]`, `[jina]`, dan `[telegram]` lebih rapi untuk Streamlit Cloud.
@@ -252,6 +328,10 @@ Worker eksternal tetap bisa memakai environment variable atau file lokal `.strea
 | `TELEGRAM_AUTO_START` | `0` | Start bot otomatis dari Streamlit app. |
 | `TELEGRAM_DELETE_WEBHOOK_ON_START` | `1` | Hapus webhook supaya long polling menerima pesan. |
 | `TELEGRAM_DROP_PENDING_UPDATES` | `0` | Buang update lama saat deleteWebhook bila diperlukan. |
+| `TELEGRAM_BROADCAST_CHAT_IDS` | kosong | Tujuan broadcast worker pagi. |
+| `WORKER_SEND_TELEGRAM` | otomatis | Aktifkan/nonaktifkan pengiriman Telegram dari `worker.py`. |
+| `WORKER_REQUIRE_TELEGRAM` | `0` | Jadikan missing token/chat ID sebagai error. |
+| `WORKER_TELEGRAM_TITLE` | otomatis | Header pesan Telegram pagi. |
 
 ## Keamanan secrets
 
@@ -306,6 +386,6 @@ python -m unittest discover -s tests -v
 - RSS resmi bisa kosong, lambat, atau terlalu umum pada sebagian sumber; karena itu timeout dibuat pendek dan Jina dipakai sebagai fallback ketika RSS belum relevan dengan keyword search.
 - Jina Search bukan mesin berita khusus. Query fallback dikunci ke domain penerbit dengan `site:` satu domain per request, sedangkan sosial/video/agregator diblokir setelah respons diterima. Cara ini lebih stabil daripada mengirim query panjang berisi `OR` dan banyak `-site:` yang dapat memicu 422.
 - Scrape isi artikel dilakukan hanya pada artikel yang sudah lolos filter dan jumlahnya dibatasi. Jika proses terasa lambat, turunkan `NEWS_MAX_ARTICLE_SCRAPES` atau matikan sementara dengan `NEWS_ENABLE_ARTICLE_SCRAPE=0`.
-- Telegram Bot memakai long polling. Pastikan proses `python telegram_bot.py` tetap berjalan di server/VPS/hosting yang mendukung worker background.
+- Telegram Bot interaktif memakai long polling. Pastikan proses `python telegram_bot.py` tetap berjalan di server/VPS/hosting yang mendukung worker background. Untuk broadcast pagi, GitHub Actions cukup menjalankan `worker.py` sesuai jadwal dan tidak perlu proses always-on.
 - Tanggal relatif dihitung terhadap waktu Jakarta. Contoh: pukul `00:30`, artikel `2 jam yang lalu` dianggap berasal dari hari sebelumnya dan dikeluarkan.
 - Putar ulang token yang pernah dibagikan di chat, commit, screenshot, atau file publik.
