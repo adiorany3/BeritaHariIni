@@ -32,7 +32,8 @@ def apply_runtime_config_from_secrets() -> None:
     for name in (
         "NEWS_MAX_SEARCH_ROUNDS", "NEWS_REQUEST_TIMEOUT", "JINA_PAGE_TIMEOUT",
         "JINA_RESPOND_WITH", "NEWS_ENABLE_RSS", "NEWS_RSS_TIMEOUT",
-        "NEWS_MAX_RSS_FEEDS", "NEWS_ALLOW_SOCIAL",
+        "NEWS_MAX_RSS_FEEDS", "NEWS_ALLOW_SOCIAL", "NEWS_ENABLE_ARTICLE_SCRAPE",
+        "NEWS_ARTICLE_SCRAPE_TIMEOUT", "NEWS_MAX_ARTICLE_SCRAPES",
     ):
         if os.getenv(name):
             continue
@@ -57,6 +58,8 @@ def normalise_article(article: dict[str, Any]) -> dict[str, str]:
     value.setdefault("quality_score", "0")
     value.setdefault("quality_reasons", [])
     value.setdefault("summary", "")
+    value.setdefault("scraped_info", "")
+    value.setdefault("scrape_status", "")
     value.setdefault("source", "Sumber tidak diketahui")
     value.setdefault("url", "")
     value.setdefault("title", "Tanpa judul")
@@ -73,7 +76,7 @@ def filter_articles(
         article = normalise_article(raw)
         if selected and article["category"] not in selected:
             continue
-        searchable = f"{article['source']} {article['title']}".lower()
+        searchable = f"{article['source']} {article['title']} {article['summary']} {article.get('scraped_info', '')}".lower()
         if source_query and source_query not in searchable:
             continue
         filtered.append(article)
@@ -99,7 +102,11 @@ def render_article_card(article: dict[str, str]) -> None:
             else:
                 st.caption(f"🕒 {article['published_at']}")
         st.markdown(f"**{article['title']}**")
-        if article["summary"]:
+        info = article.get("scraped_info") or article.get("summary", "")
+        if info:
+            st.markdown("**Informasi utama:**")
+            st.write(info)
+        elif article.get("summary"):
             st.caption(article["summary"])
         if article.get("quality_reasons") not in {"", "[]"}:
             reasons = str(article.get("quality_reasons", "")).strip("[]").replace("'", "")
@@ -107,8 +114,8 @@ def render_article_card(article: dict[str, str]) -> None:
                 st.caption(f"Alasan lolos: {reasons}")
         if article.get("time_status") == "needs_time_verification":
             st.caption("Waktu publikasi belum ada pada respons pencarian. Periksa waktu di sumber asli.")
-        if article["url"].startswith(("https://", "http://")):
-            st.link_button("Buka artikel asli", article["url"], use_container_width=False)
+        if article.get("scrape_status") and not article.get("scraped_info"):
+            st.caption(f"Info scrape: {article['scrape_status']}")
 
 
 def render_grouped_articles(articles: list[dict[str, str]], empty_message: str) -> None:
@@ -142,11 +149,12 @@ def display_raw_response(raw_markdown: str, metadata: dict[str, str]) -> None:
         )
         if metadata.get("strict_query_relevance") == "true":
             st.caption(f"Mode relevansi ketat aktif untuk term: {metadata.get('query_terms', '-')}")
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("Kandidat tautan", metadata.get("raw_candidates", "-"))
         col2.metric("Waktu terverifikasi", metadata.get("today_articles", "-"))
         col3.metric("RSS dicek", metadata.get("rss_feeds_checked", "0"))
         col4.metric("Pencarian Jina", metadata.get("search_rounds", "0"))
+        col5.metric("Scrape berhasil", f"{metadata.get('article_scrape_success', '0')}/{metadata.get('article_scrape_attempted', '0')}")
         st.code(raw_markdown, language="json", wrap_lines=True)
         st.download_button(
             "Unduh respons sumber",
@@ -158,7 +166,7 @@ def display_raw_response(raw_markdown: str, metadata: dict[str, str]) -> None:
 
 st.title("📰 Monitor Berita Hari Ini")
 st.caption(
-    "Artikel penerbit dari sumber berita resmi dengan tautan langsung ke konten asli. "
+    "Artikel penerbit dari sumber berita resmi dengan informasi utama hasil scrape. "
     "RSS penerbit dicek lebih dulu agar cepat dan bersih; Jina Search dipakai sebagai fallback yang dibatasi ke domain berita."
 )
 
@@ -169,19 +177,22 @@ with st.sidebar:
     st.write("RSS penerbit:", "✅ aktif" if os.getenv("NEWS_ENABLE_RSS", "1") not in {"0", "false", "False"} else "nonaktif")
     st.write("Mode Jina:", os.getenv("JINA_RESPOND_WITH", "no-content"))
     st.write("Maks. pencarian Jina/siklus:", os.getenv("NEWS_MAX_SEARCH_ROUNDS", "2"))
+    st.write("Scrape isi artikel:", "✅ aktif" if os.getenv("NEWS_ENABLE_ARTICLE_SCRAPE", "1") not in {"0", "false", "False"} else "nonaktif")
     st.divider()
-    st.caption("Buka sumber asli untuk memeriksa isi, konteks, dan waktu publikasi artikel.")
+    st.caption("Kartu berita menampilkan informasi utama hasil scrape; URL asli hanya disimpan untuk audit internal.")
 
-metric_left, metric_middle, metric_right = st.columns(3)
+metric_left, metric_middle, metric_right, metric_extra = st.columns(4)
 metric_left.metric("Mode", "Pencarian langsung")
 metric_middle.metric("RSS penerbit", "Aktif" if os.getenv("NEWS_ENABLE_RSS", "1") not in {"0", "false", "False"} else "Nonaktif")
 metric_right.metric("Maks. pencarian Jina", os.getenv("NEWS_MAX_SEARCH_ROUNDS", "2"))
+metric_extra.metric("Scrape artikel", "Aktif" if os.getenv("NEWS_ENABLE_ARTICLE_SCRAPE", "1") not in {"0", "false", "False"} else "Nonaktif")
 
 with st.expander("Cari berita langsung", expanded=True):
     st.caption(
         "Masukkan topik/keyword. Untuk keyword spesifik, RSS hanya dipakai bila artikelnya cocok; "
         "kalau tidak, sistem lanjut ke Jina Search yang dibatasi ke domain media berita. "
-        "Sosial/video, Google News, gambar, menu, kanal, metrik engagement, dan artikel lama dibuang."
+        "Sosial/video, Google News, gambar, menu, kanal, metrik engagement, dan artikel lama dibuang. "
+        "Hasil akhir diperkaya dengan informasi utama dari isi artikel agar tidak perlu membuka website sumber."
     )
     query = st.text_input("Kata kunci", value=default_query())
     if st.button("Cari berita terbaru hari ini", type="primary"):
@@ -190,7 +201,7 @@ with st.expander("Cari berita langsung", expanded=True):
             st.error("Atur JINA_API_KEY di Streamlit Secrets untuk menjalankan pencarian langsung.")
         else:
             try:
-                with st.spinner("Mengambil dan menyaring artikel sesuai kata kunci..."):
+                with st.spinner("Mengambil, menyaring, dan men-scrape informasi utama artikel..."):
                     live_articles, live_metadata, raw_markdown = fetch_news_with_raw(
                         api_key, query=query, max_results=30
                     )
@@ -216,6 +227,7 @@ with st.expander("Cari berita langsung", expanded=True):
                         f"{verified_count} artikel dengan waktu hari ini terdeteksi dari "
                         f"{live_metadata.get('raw_candidates', '0')} kandidat tautan. "
                         f"RSS dicek: {live_metadata.get('rss_feeds_checked', '0')}, Jina: {rounds} pencarian. "
+                        f"Scrape isi: {live_metadata.get('article_scrape_success', '0')}/{live_metadata.get('article_scrape_attempted', '0')}. "
                         f"Relevansi ketat: {live_metadata.get('strict_query_relevance', 'false')}."
                     )
             except requests.RequestException as error:

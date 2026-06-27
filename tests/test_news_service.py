@@ -7,8 +7,11 @@ from unittest.mock import Mock, patch
 
 from news_service import (
     default_query,
+    enrich_articles_with_scraped_info,
+    extract_article_information,
     fallback_queries,
     fetch_news,
+    fetch_article_information,
     fetch_raw_markdown,
     source_scoped_query,
     parse_search_response,
@@ -231,7 +234,7 @@ Ringkasan berita yang membahas inovasi pendidikan digital di Indonesia.
 27 Juni 2026
 Ringkasan tentang teknologi Indonesia hari ini.
 """
-        with patch.dict(os.environ, {"NEWS_MAX_SEARCH_ROUNDS": "2", "NEWS_ENABLE_RSS": "0"}, clear=False):
+        with patch.dict(os.environ, {"NEWS_MAX_SEARCH_ROUNDS": "2", "NEWS_ENABLE_RSS": "0", "NEWS_ENABLE_ARTICLE_SCRAPE": "0"}, clear=False):
             with patch("news_service.jakarta_now", return_value=datetime(2026, 6, 27, 14, 0)):
                 with patch("news_service.fetch_raw_markdown", return_value=(markdown, {
                     "query": "berita",
@@ -285,7 +288,7 @@ Ringkasan tentang teknologi Indonesia hari ini.
                 "category": "Ekonomi & Bisnis",
             },
         ]
-        with patch.dict(os.environ, {"NEWS_MAX_SEARCH_ROUNDS": "0", "NEWS_ENABLE_RSS": "1"}, clear=False):
+        with patch.dict(os.environ, {"NEWS_MAX_SEARCH_ROUNDS": "0", "NEWS_ENABLE_RSS": "1", "NEWS_ENABLE_ARTICLE_SCRAPE": "0"}, clear=False):
             with patch("news_service.jakarta_now", return_value=datetime(2026, 6, 27, 14, 0)):
                 with patch("news_service.fetch_rss_articles", return_value=(rss_items, {
                     "rss_enabled": "true",
@@ -299,6 +302,63 @@ Ringkasan tentang teknologi Indonesia hari ini.
         self.assertEqual([item["title"] for item in articles], [
             "Harga Telur Ayam Naik di Pasar Jakarta"
         ])
+
+    def test_extract_article_information_prefers_query_phrase_and_numbers(self) -> None:
+        content = """
+Title: Harga Telur Ayam Naik di Pasar Jakarta
+URL Source: https://contoh.id/berita/harga-telur
+Markdown Content:
+![foto](https://contoh.id/foto.jpg)
+[Baca juga](https://contoh.id/link)
+Pedagang pasar menyebut harga telur ayam naik menjadi Rp32.000 per kilogram pada Sabtu pagi.
+Kenaikan harga telur terjadi karena pasokan dari sentra produksi berkurang menjelang akhir pekan.
+Sementara itu harga beras relatif stabil di sejumlah pasar tradisional.
+"""
+        info = extract_article_information(
+            content,
+            title="Harga Telur Ayam Naik di Pasar Jakarta",
+            query="harga telur",
+        )
+        self.assertIn("harga telur", info.lower())
+        self.assertIn("Rp32.000", info)
+        self.assertNotIn("https://", info)
+        self.assertNotIn("Markdown Content", info)
+
+    def test_fetch_article_information_uses_jina_reader_without_opening_source_site(self) -> None:
+        response = Mock()
+        response.text = '{"data":{"content":"Pedagang menyebut harga telur ayam naik menjadi Rp32.000 per kilogram hari ini. Kenaikan terjadi karena pasokan berkurang dari sentra produksi."}}'
+        response.raise_for_status = Mock()
+        with patch.dict(os.environ, {"NEWS_ARTICLE_SCRAPE_TIMEOUT": "8"}, clear=False):
+            with patch("news_service.requests.get", return_value=response) as mocked_get:
+                info, status = fetch_article_information(
+                    "token",
+                    {
+                        "title": "Harga Telur Ayam Naik di Pasar Jakarta",
+                        "url": "https://www.kompas.com/read/2026/06/27/120000/harga-telur-ayam-naik",
+                    },
+                    query="harga telur",
+                )
+        _, kwargs = mocked_get.call_args
+        self.assertEqual(mocked_get.call_args.args[0], "https://r.jina.ai/https://www.kompas.com/read/2026/06/27/120000/harga-telur-ayam-naik")
+        self.assertEqual(kwargs["headers"]["Accept"], "application/json")
+        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer token")
+        self.assertEqual(kwargs["headers"]["X-Retain-Images"], "none")
+        self.assertEqual(status, "scraped_with_jina_reader")
+        self.assertIn("Rp32.000", info)
+
+    def test_enrich_articles_replaces_summary_with_scraped_information(self) -> None:
+        articles = [{
+            "id": "a1",
+            "title": "Harga Telur Ayam Naik di Pasar Jakarta",
+            "url": "https://www.kompas.com/read/2026/06/27/120000/harga-telur-ayam-naik",
+            "summary": "Ringkasan lama dari RSS.",
+        }]
+        with patch.dict(os.environ, {"NEWS_ENABLE_ARTICLE_SCRAPE": "1", "NEWS_MAX_ARTICLE_SCRAPES": "1"}, clear=False):
+            with patch("news_service.fetch_article_information", return_value=("Harga telur ayam naik menjadi Rp32.000 per kilogram.", "scraped_with_jina_reader")):
+                enriched, metadata = enrich_articles_with_scraped_info("token", articles, query="harga telur")
+        self.assertEqual(enriched[0]["summary"], "Harga telur ayam naik menjadi Rp32.000 per kilogram.")
+        self.assertEqual(enriched[0]["scraped_info"], "Harga telur ayam naik menjadi Rp32.000 per kilogram.")
+        self.assertEqual(metadata["article_scrape_success"], "1")
 
     def test_specific_search_does_not_stop_at_static_rss_results(self) -> None:
         rss_items = [
@@ -320,7 +380,7 @@ Ringkasan tentang teknologi Indonesia hari ini.
 27 Juni 2026
 Artikel membahas peluncuran mobil listrik baru dan rencana produksi kendaraan ramah lingkungan.
 """
-        with patch.dict(os.environ, {"NEWS_MAX_SEARCH_ROUNDS": "1", "NEWS_ENABLE_RSS": "1"}, clear=False):
+        with patch.dict(os.environ, {"NEWS_MAX_SEARCH_ROUNDS": "1", "NEWS_ENABLE_RSS": "1", "NEWS_ENABLE_ARTICLE_SCRAPE": "0"}, clear=False):
             with patch("news_service.jakarta_now", return_value=datetime(2026, 6, 27, 14, 0)):
                 with patch("news_service.fetch_rss_articles", return_value=(rss_items, {
                     "rss_enabled": "true",

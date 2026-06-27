@@ -23,6 +23,7 @@ import requests
 
 JAKARTA = ZoneInfo("Asia/Jakarta")
 JINA_SEARCH_URL = "https://s.jina.ai/"
+JINA_READER_URL = "https://r.jina.ai/"
 MONTHS_ID = (
     "Januari", "Februari", "Maret", "April", "Mei", "Juni",
     "Juli", "Agustus", "September", "Oktober", "November", "Desember",
@@ -231,6 +232,9 @@ DEFAULT_RSS_TIMEOUT = 4
 DEFAULT_MAX_RSS_FEEDS = 8
 DEFAULT_ENABLE_RSS = True
 DEFAULT_ALLOW_SOCIAL = False
+DEFAULT_ENABLE_ARTICLE_SCRAPE = True
+DEFAULT_ARTICLE_SCRAPE_TIMEOUT = 12
+DEFAULT_MAX_ARTICLE_SCRAPES = 5
 MIN_VERIFIED_QUALITY_SCORE = 58
 MIN_UNVERIFIED_QUALITY_SCORE = 72
 
@@ -412,6 +416,21 @@ def configured_max_rss_feeds() -> int:
     return _env_int("NEWS_MAX_RSS_FEEDS", DEFAULT_MAX_RSS_FEEDS, minimum=0, maximum=len(RSS_FEEDS))
 
 
+def configured_enable_article_scrape() -> bool:
+    """Scrape informasi artikel aktif default agar user tidak perlu membuka situs asli."""
+    return _env_bool("NEWS_ENABLE_ARTICLE_SCRAPE", DEFAULT_ENABLE_ARTICLE_SCRAPE)
+
+
+def configured_article_scrape_timeout(default: int = DEFAULT_ARTICLE_SCRAPE_TIMEOUT) -> int:
+    """Timeout pendek untuk Jina Reader per artikel agar proses tetap masuk akal."""
+    return _env_int("NEWS_ARTICLE_SCRAPE_TIMEOUT", default, minimum=5, maximum=45)
+
+
+def configured_max_article_scrapes() -> int:
+    """Jumlah artikel akhir yang diperkaya dengan isi scrape."""
+    return _env_int("NEWS_MAX_ARTICLE_SCRAPES", DEFAULT_MAX_ARTICLE_SCRAPES, minimum=0, maximum=20)
+
+
 def configured_request_timeout(default: int = DEFAULT_REQUEST_TIMEOUT) -> int:
     """Timeout HTTP client. Dapat dioverride dengan NEWS_REQUEST_TIMEOUT."""
     return _env_int("NEWS_REQUEST_TIMEOUT", default, minimum=8, maximum=90)
@@ -441,6 +460,98 @@ def _strip_html(value: Any, limit: int = 700) -> str:
     text = re.sub(r"<[^>]+>", " ", text)
     text = unescape(text)
     return _clean_text(text, limit)
+
+
+def _plain_markdown_text(value: Any, limit: int = 5_000) -> str:
+    """Ubah markdown/HTML dari Reader menjadi teks bersih tanpa gambar dan daftar link."""
+    text = str(value or "")
+    if not text:
+        return ""
+    text = re.sub(r"<script\b[^>]*>.*?</script>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<style\b[^>]*>.*?</style>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", text)
+    # Jaga teks tautan, buang URL-nya agar kartu tidak berubah menjadi daftar link.
+    def replace_markdown_link(match: re.Match[str]) -> str:
+        label = match.group(1).strip()
+        if any(part in label.casefold() for part in BLOCKED_TITLE_PARTS):
+            return " "
+        return label
+
+    text = re.sub(r"\[([^\]\n]{1,220})\]\([^)]*\)", replace_markdown_link, text)
+    text = re.sub(r"https?://\S+", " ", text)
+    text = re.sub(r"(?m)^\s*(?:Title|URL Source|Markdown Content|Published Time):\s*", " ", text)
+    text = re.sub(r"[`*_>#|~]+", " ", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text[:limit]
+
+
+def _sentence_candidates(text: str) -> list[str]:
+    """Pecah teks menjadi kandidat kalimat yang cukup informatif."""
+    cleaned = _plain_markdown_text(text, 8_000)
+    if not cleaned:
+        return []
+    raw_sentences = re.split(r"(?<=[.!?])\s+|\s+[•·]\s+", cleaned)
+    sentences: list[str] = []
+    seen: set[str] = set()
+    for sentence in raw_sentences:
+        sentence = _clean_text(sentence.strip(" -–—:;"), 320)
+        if len(sentence) < 45:
+            continue
+        lower = sentence.casefold()
+        if any(part in lower for part in BLOCKED_TITLE_PARTS):
+            continue
+        if SOCIAL_ENGAGEMENT_RE.search(sentence) or NON_ARTICLE_CONTEXT_RE.search(sentence):
+            continue
+        key = _normalise_search_text(sentence)
+        if key in seen:
+            continue
+        sentences.append(sentence)
+        seen.add(key)
+    return sentences
+
+
+def extract_article_information(content: str, *, title: str = "", query: str = "", limit: int = 850) -> str:
+    """Ambil informasi utama dari isi artikel, bukan artikel penuh mentah.
+
+    Untuk menjaga tampilan tetap ringkas dan tidak menyalin seluruh artikel, fungsi ini
+    memilih beberapa kalimat paling relevan dengan query/judul, lalu membatasinya.
+    """
+    sentences = _sentence_candidates(content)
+    if not sentences:
+        return ""
+
+    query_tokens = _specific_query_token_list(query)
+    title_tokens = _specific_query_token_list(title)
+    phrase = _specific_query_phrase(query)
+
+    def score(sentence: str, index: int) -> int:
+        normalised = _normalise_search_text(sentence)
+        words = set(normalised.split())
+        value = max(0, 40 - index)  # paragraf awal biasanya memuat lead berita
+        if phrase and phrase in normalised:
+            value += 40
+        if query_tokens:
+            value += 12 * sum(token in words or token in normalised for token in query_tokens)
+        if title_tokens:
+            value += 4 * sum(token in words or token in normalised for token in title_tokens[:8])
+        if re.search(r"(?:\brp\s*\d[\d.,]*\b|\b\d+(?:[.,]\d+)?\s*(?:%|persen|rupiah|ribu|juta|miliar|triliun|kg|ton)\b)", sentence, re.IGNORECASE):
+            value += 10
+        if NEWS_VERB_RE.search(sentence):
+            value += 6
+        return value
+
+    ranked = sorted(enumerate(sentences[:18]), key=lambda pair: score(pair[1], pair[0]), reverse=True)
+    selected_indexes = sorted(index for index, _ in ranked[:3])
+    selected = [sentences[index] for index in selected_indexes]
+    info = _clean_text(" ".join(selected), limit)
+    # Hindari potongan yang terputus di tengah kata/kalimat terlalu jauh.
+    if len(info) >= limit - 1:
+        cut = max(info.rfind(". ", 0, limit), info.rfind("; ", 0, limit), info.rfind(", ", 0, limit))
+        if cut > 250:
+            info = info[: cut + 1].strip()
+    return info
 
 
 def _rfc_datetime_to_iso(value: str, now: datetime | None = None) -> str:
@@ -1590,6 +1701,146 @@ def fetch_raw_markdown(
     return raw_markdown, metadata
 
 
+def _reader_content_from_payload(payload: str) -> str:
+    """Ambil field konten dari respons Jina Reader JSON/markdown secara fleksibel."""
+    text = str(payload or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+    def first_content(value: Any) -> str:
+        if isinstance(value, dict):
+            for key in ("content", "text", "markdown", "description", "snippet", "body"):
+                current = value.get(key)
+                if isinstance(current, str) and current.strip():
+                    return current
+            for key in ("data", "result", "article"):
+                current = first_content(value.get(key))
+                if current:
+                    return current
+            for child in value.values():
+                current = first_content(child)
+                if current:
+                    return current
+        elif isinstance(value, list):
+            for child in value:
+                current = first_content(child)
+                if current:
+                    return current
+        return ""
+
+    return first_content(parsed)
+
+
+def fetch_article_information(
+    api_key: str,
+    article: dict[str, Any],
+    *,
+    query: str = "",
+    timeout: int | None = None,
+) -> tuple[str, str]:
+    """Scrape satu artikel dengan Jina Reader dan kembalikan informasi utamanya.
+
+    Endpoint Reader mengubah URL artikel menjadi teks ramah LLM, sehingga aplikasi dapat
+    menampilkan inti informasi tanpa user harus membuka website sumber.
+    """
+    url = _valid_url(article.get("url"))
+    if not url:
+        return "", "URL artikel tidak valid"
+
+    request_timeout = configured_article_scrape_timeout(timeout or DEFAULT_ARTICLE_SCRAPE_TIMEOUT)
+    headers = {
+        "Accept": "application/json",
+        "X-Retain-Images": "none",
+        "X-Md-Link-Style": "discarded",
+        "X-Timeout": str(request_timeout),
+        "User-Agent": "news-monitor-streamlit/6.0-info-scrape",
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    response = requests.get(
+        f"{JINA_READER_URL}{url}",
+        headers=headers,
+        timeout=request_timeout + 3,
+    )
+    response.raise_for_status()
+    content = _reader_content_from_payload(response.text)
+    info = extract_article_information(
+        content,
+        title=str(article.get("title", "")),
+        query=query,
+    )
+    if not info:
+        return "", "Reader tidak menemukan isi artikel yang cukup informatif"
+    return info, "scraped_with_jina_reader"
+
+
+def enrich_articles_with_scraped_info(
+    api_key: str,
+    articles: list[dict[str, Any]],
+    *,
+    query: str = "",
+    timeout: int | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    """Perkaya artikel akhir dengan informasi utama hasil scrape secara paralel."""
+    metadata = {
+        "article_scrape_enabled": str(configured_enable_article_scrape()).lower(),
+        "article_scrape_attempted": "0",
+        "article_scrape_success": "0",
+        "article_scrape_timeout_seconds": str(configured_article_scrape_timeout(timeout or DEFAULT_ARTICLE_SCRAPE_TIMEOUT)),
+    }
+    if not articles or not configured_enable_article_scrape():
+        return articles, metadata
+
+    scrape_limit = min(configured_max_article_scrapes(), len(articles))
+    metadata["article_scrape_limit"] = str(scrape_limit)
+    if scrape_limit <= 0:
+        return articles, metadata
+
+    enriched = [dict(item) for item in articles]
+    workers = min(5, scrape_limit)
+    attempted = 0
+    success = 0
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(
+                fetch_article_information,
+                api_key,
+                enriched[index],
+                query=query,
+                timeout=timeout,
+            ): index
+            for index in range(scrape_limit)
+        }
+        attempted = len(futures)
+        for future in as_completed(futures):
+            index = futures[future]
+            try:
+                info, status = future.result()
+            except requests.RequestException as error:
+                enriched[index]["scrape_status"] = f"reader_error: {error}"
+                continue
+            if info:
+                enriched[index]["scraped_info"] = info
+                enriched[index]["summary"] = info
+                enriched[index]["scrape_status"] = status
+                success += 1
+            else:
+                enriched[index]["scrape_status"] = status
+
+    metadata.update(
+        {
+            "article_scrape_attempted": str(attempted),
+            "article_scrape_success": str(success),
+        }
+    )
+    return enriched, metadata
+
+
 def _fetch_rounds(
     api_key: str,
     query: str | None,
@@ -1673,6 +1924,13 @@ def _fetch_rounds(
         articles = _rank_and_filter(unverified_items, primary_query, max_results)
         used_unverified = bool(articles)
 
+    articles, scrape_metadata = enrich_articles_with_scraped_info(
+        api_key,
+        articles,
+        query=primary_query,
+        timeout=timeout,
+    )
+
     raw_candidates = sum(stats["raw_candidates"] for _, stats, _ in parsed_rounds)
     raw_candidates += len(rss_items)
     verified_count = sum(item.get("time_status") == "verified_today" for item in articles)
@@ -1695,6 +1953,7 @@ def _fetch_rounds(
             ),
         }
     )
+    metadata.update(scrape_metadata)
     return articles, metadata, "\n\n---\n\n".join(raw_sections)
 
 
