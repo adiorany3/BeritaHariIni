@@ -1,17 +1,18 @@
 # Monitor Berita Hari Ini dengan Streamlit, GitHub Actions, dan Telegram
 
-Aplikasi ini mengambil hasil pencarian berita melalui Jina Search, menampilkan hasil terakhir di Streamlit, lalu mengirim artikel baru ke Telegram. GitHub Actions menjalankan pemeriksaan tiap 30 menit. Tampilan Streamlit dimuat ulang tiap 5 menit.
+Aplikasi ini mencari berita melalui Jina Search dengan `X-Engine: direct`, menyaring artikel yang memiliki marker waktu **hari ini** pada zona waktu Asia/Jakarta, mengelompokkan artikel berdasarkan kategori, dan mengirim tautan artikel baru ke Telegram. GitHub Actions menjalankan pemeriksaan setiap 30 menit. Streamlit memuat ulang dashboard setiap 5 menit.
 
 ## Fitur
 
-- Query otomatis memakai tanggal **Asia/Jakarta**.
-- Header `Authorization: Bearer ...` dan `X-Engine: direct` diterapkan saat meminta Jina Search.
-- Hasil dinormalisasi dari respons JSON atau Markdown.
-- Pencarian langsung di Streamlit memperlihatkan respons Markdown mentah Jina apa adanya, termasuk format `Title`, `URL Source`, deskripsi, dan tautan.
-- Artikel dideduplikasi berdasarkan URL dan judul.
-- Telegram hanya menerima artikel yang belum pernah diberi notifikasi.
-- Riwayat dan hasil terbaru disimpan di folder `data/` agar dapat dipakai halaman Streamlit.
-- Tidak ada token atau ID chat yang tersimpan di kode.
+- Query otomatis menambahkan tanggal Jakarta dan kategori utama: teknologi, edukasi, otomotif, ekonomi, olahraga, serta kesehatan.
+- Hanya menyimpan artikel yang memiliki marker publikasi hari ini, misalnya `15 menit yang lalu`, `2 jam yang lalu`, `Hari ini`, atau tanggal yang sama dengan tanggal Jakarta.
+- Menolak artikel kemarin, tautan tanpa waktu, gambar, ikon, iklan, menu, halaman kategori, halaman pencarian, dan URL perantara seperti Google News.
+- Semua tombol **Buka artikel asli** memakai URL langsung dari situs penerbit. Aplikasi tidak menampilkan gambar hasil scraping.
+- Kategori: Teknologi, Edukasi, Otomotif, Ekonomi & Bisnis, Olahraga, Kesehatan, Hiburan, Politik, Hukum & Kriminal, Internasional, Gaya Hidup & Perjalanan, Lingkungan & Cuaca, dan Lainnya.
+- Filter kategori serta judul atau sumber tersedia untuk hasil pencarian langsung dan hasil GitHub Actions.
+- Respons Markdown mentah Jina tersedia pada panel audit, tetapi ditampilkan sebagai kode agar gambar, HTML, dan iklan tidak dimuat.
+- Telegram hanya menerima artikel langsung yang belum pernah dikirim. Pesan memuat kategori, sumber, waktu, dan URL asli.
+- Token serta chat ID tidak tersimpan dalam source code.
 
 ## Struktur proyek
 
@@ -51,7 +52,7 @@ export TELEGRAM_CHAT_ID="chat_id_anda"
 python worker.py
 ```
 
-Untuk dashboard lokal, salin `.streamlit/secrets.toml.example` menjadi `.streamlit/secrets.toml`, isi `JINA_API_KEY`, lalu jalankan. Tombol **Cari berita terbaru** menampilkan daftar artikel dan respons Markdown mentah dari Jina di halaman yang sama:
+Untuk dashboard lokal, salin `.streamlit/secrets.toml.example` menjadi `.streamlit/secrets.toml`, isi `JINA_API_KEY`, lalu jalankan:
 
 ```bash
 streamlit run app.py
@@ -60,26 +61,19 @@ streamlit run app.py
 ## Deploy di GitHub dan Streamlit Community Cloud
 
 1. Buat repository GitHub baru, lalu unggah seluruh isi proyek ini.
-2. Di GitHub, buka **Settings > Secrets and variables > Actions > New repository secret**. Tambahkan:
-   - `JINA_API_KEY`
-   - `TELEGRAM_BOT_TOKEN`
-   - `TELEGRAM_CHAT_ID`
+2. Di GitHub, buka **Settings > Secrets and variables > Actions > New repository secret**. Tambahkan `JINA_API_KEY`, `TELEGRAM_BOT_TOKEN`, dan `TELEGRAM_CHAT_ID`.
 3. Opsional, di **Settings > Secrets and variables > Actions > Variables**, buat `NEWS_QUERY` untuk mengganti kueri default.
-4. Buka tab **Actions**, jalankan workflow **Pantau berita dan Telegram** dengan **Run workflow** sekali untuk membuat data awal.
+4. Buka tab **Actions**, jalankan workflow **Pantau berita dan Telegram** dengan **Run workflow** satu kali untuk membuat data awal.
 5. Di Streamlit Community Cloud, buat aplikasi baru dari repo ini dengan file utama `app.py`.
-6. Pada pengaturan Secrets Streamlit, masukkan:
+6. Pada **Settings > Secrets** Streamlit, masukkan:
 
 ```toml
 JINA_API_KEY = "jina_kunci_anda"
-# Isi setelah repository publik tersedia. Gunakan URL raw data/latest_news.json.
+# Opsional. Isi URL raw GitHub untuk data/latest_news.json.
 NEWS_DATA_URL = ""
 ```
 
-`NEWS_DATA_URL` bersifat opsional. Jika kosong, Streamlit membaca file `data/latest_news.json` yang ikut berada di repo saat deployment. Jika diisi URL raw GitHub, dashboard menarik data terbaru tanpa menunggu deployment ulang.
-
-## Telegram chat ID
-
-Kirim pesan apa saja ke bot Anda terlebih dahulu. Setelah itu, buka endpoint `getUpdates` Telegram dengan token bot secara privat untuk melihat nilai `chat.id`. Jangan masukkan token bot di URL, issue GitHub, atau source code.
+`NEWS_DATA_URL` bersifat opsional. Bila diisi URL raw GitHub, dashboard mengambil data terbaru tanpa perlu menunggu deployment ulang.
 
 ## Pengujian
 
@@ -89,8 +83,8 @@ python -m unittest discover -s tests -v
 
 ## Catatan operasional
 
-- GitHub Actions berbasis jadwal dapat mengalami keterlambatan. Dashboard menampilkan waktu pemeriksaan terakhir agar keterlambatan terlihat.
-- Pencarian memakai tanggal hari ini untuk meningkatkan relevansi, tetapi tanggal publikasi tiap artikel bergantung pada metadata yang dikembalikan sumber dan mesin pencari. Periksa halaman asli untuk konfirmasi.
-- Respons Markdown mentah dapat sangat panjang. Dashboard menaruhnya di sesi browser saat pencarian langsung dan tidak menyimpannya ke GitHub agar repository tidak cepat membesar.
-- Batasi `NOTIFICATION_LIMIT` agar Telegram tidak menerima terlalu banyak pesan ketika pertama kali dijalankan.
+- Tanggal dari sumber tidak selalu tersedia. Agar rentang waktu konsisten, tautan tanpa marker waktu sengaja tidak ditampilkan.
+- Artikel dengan marker relatif dihitung terhadap waktu pemeriksaan Jakarta. Contoh: pada pukul 00:30, artikel `2 jam yang lalu` dianggap berasal dari hari sebelumnya dan dikeluarkan.
+- GitHub Actions terjadwal dapat terlambat. Dashboard menunjukkan waktu pemeriksaan terakhir agar kondisi ini terlihat.
+- Batasi `NOTIFICATION_LIMIT` agar Telegram tidak menerima terlalu banyak pesan pada pemeriksaan pertama.
 - Putar ulang atau cabut token yang pernah dibagikan di chat, commit, screenshot, atau file publik.

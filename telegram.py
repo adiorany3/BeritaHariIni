@@ -1,4 +1,4 @@
-"""Notifikasi Telegram dengan format ringkas dan aman untuk batas pesan."""
+"""Notifikasi Telegram untuk tautan artikel langsung yang lolos filter hari ini."""
 from __future__ import annotations
 
 from typing import Any
@@ -11,13 +11,22 @@ def _clean(value: str, max_length: int) -> str:
 
 
 def build_message(articles: list[dict[str, Any]], date_label: str) -> str:
-    lines = [f"📰 Berita baru terdeteksi | {date_label}", ""]
+    lines = [f"📰 Berita baru hari ini | {date_label}", ""]
     for index, article in enumerate(articles, start=1):
         title = _clean(article.get("title", "Tanpa judul"), 180)
+        category = _clean(article.get("category", "Lainnya"), 60)
         source = _clean(article.get("source", "Sumber tidak diketahui"), 80)
+        published_at = _clean(article.get("published_at", "Hari ini"), 80)
         url = _clean(article.get("url", ""), 500)
-        lines.extend([f"{index}. {title}", f"Sumber: {source}", url, ""])
-    lines.append("Periksa artikel asli sebelum membagikan atau mengambil keputusan.")
+        lines.extend(
+            [
+                f"{index}. {title}",
+                f"Kategori: {category} | Sumber: {source} | Waktu: {published_at}",
+                url,
+                "",
+            ]
+        )
+    lines.append("Tautan mengarah ke artikel asli. Periksa sumber sebelum membagikan atau mengambil keputusan.")
     return "\n".join(lines)
 
 
