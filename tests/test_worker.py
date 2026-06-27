@@ -16,7 +16,8 @@ class WorkerBroadcastTests(unittest.TestCase):
 
     def test_send_morning_digest_sends_title_summary_and_link_to_each_chat(self) -> None:
         fake_bot = Mock()
-        with patch("worker.TelegramNewsBot", return_value=fake_bot) as bot_class:
+        with patch.dict(os.environ, {"STREAMLIT_APP_URL": "https://berita-demo.streamlit.app"}, clear=False), \
+             patch("worker.TelegramNewsBot", return_value=fake_bot) as bot_class:
             sent = worker.send_morning_digest(
                 token="telegram-token",
                 jina_api_key="jina-key",
@@ -42,8 +43,9 @@ class WorkerBroadcastTests(unittest.TestCase):
         self.assertIn("Berita terbaru pagi ini", sent_payload)
         self.assertIn("Harga Telur Ayam Naik", sent_payload)
         self.assertIn("Rp32.000", sent_payload)
-        self.assertIn("Buka teks Jina", sent_payload)
-        self.assertIn("https://r.jina.ai/https://www.kompas.com/read/harga-telur", sent_payload)
+        self.assertIn("Buka teks bersih (TXT)", sent_payload)
+        self.assertIn("https://berita-demo.streamlit.app?reader=https%3A%2F%2Fwww.kompas.com%2Fread%2Fharga-telur", sent_payload)
+        self.assertNotIn("https://r.jina.ai/", sent_payload)
         self.assertIn("Buka berita asli", sent_payload)
 
 

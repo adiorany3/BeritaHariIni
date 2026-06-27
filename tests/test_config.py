@@ -34,6 +34,11 @@ class ConfigTests(unittest.TestCase):
             self.assertTrue(config.get_secret_bool("TELEGRAM_DELETE_WEBHOOK_ON_START", False))
             self.assertFalse(config.get_secret_bool("TELEGRAM_DROP_PENDING_UPDATES", True))
 
+    def test_telegram_text_reader_app_url_alias_is_read(self) -> None:
+        fake = {"telegram": {"text_reader_app_url": "https://reader.example.com"}}
+        with patch.dict(os.environ, {}, clear=True), patch.object(config, "_combined_secrets", return_value=fake):
+            self.assertEqual(config.get_secret("TELEGRAM_TEXT_READER_APP_URL"), "https://reader.example.com")
+
     def test_apply_secrets_to_environment(self) -> None:
         fake = {"telegram": {"token": "telegram-secret"}, "news": {"allow_social": False}}
         with patch.dict(os.environ, {}, clear=True), patch.object(config, "_combined_secrets", return_value=fake):

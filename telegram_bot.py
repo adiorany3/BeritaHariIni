@@ -21,7 +21,7 @@ from typing import Any
 import requests
 
 from config import apply_secrets_to_environment, get_secret, get_secret_bool, get_secret_int
-from news_service import build_jina_reader_url, build_text_only_reader_url, fetch_news
+from news_service import build_text_only_reader_url, fetch_news
 from storage import read_json, write_json
 
 LOGGER = logging.getLogger(__name__)
@@ -104,6 +104,20 @@ def _compact(value: Any, limit: int = 520) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+def _telegram_text_reader_app_url() -> str:
+    """URL publik aplikasi untuk link TXT bersih di Telegram.
+
+    Jangan fallback ke `r.jina.ai` mentah untuk tombol TXT bersih, karena link
+    langsung tersebut tidak membawa header pembersih dan masih bisa menampilkan
+    markdown gambar seperti `![Image ...]`.
+    """
+    return (
+        get_secret("TELEGRAM_TEXT_READER_APP_URL", "")
+        or get_secret("STREAMLIT_APP_URL", "")
+        or get_secret("PUBLIC_APP_URL", "")
+    ).strip()
+
+
 def format_article(article: dict[str, Any], index: int) -> str:
     title = _escape(_compact(article.get("title") or "Tanpa judul", 180))
     # Output Telegram memakai konten hasil scrape saja.
@@ -119,12 +133,10 @@ def format_article(article: dict[str, Any], index: int) -> str:
     source = _escape(article.get("source") or "sumber tidak diketahui")
     published_at = _escape(article.get("published_at") or "waktu tidak diketahui")
     url = str(article.get("url") or "").strip()
-    app_url = get_secret("STREAMLIT_APP_URL", "") or get_secret("PUBLIC_APP_URL", "")
-    text_reader_url = build_text_only_reader_url(url, app_url)
-    jina_reader_url = build_jina_reader_url(url)
+    app_url = _telegram_text_reader_app_url()
+    text_reader_url = build_text_only_reader_url(url, app_url) if app_url else ""
     safe_url = html.escape(url, quote=True)
     safe_text_url = html.escape(text_reader_url, quote=True)
-    has_internal_text_reader = bool(app_url and text_reader_url and text_reader_url != jina_reader_url)
 
     lines = [
         f"<b>{index}. {title}</b>",
@@ -133,8 +145,9 @@ def format_article(article: dict[str, Any], index: int) -> str:
     ]
     if url.startswith(("http://", "https://")):
         if text_reader_url:
-            label = "Buka teks bersih (TXT)" if has_internal_text_reader else "Buka teks Jina"
-            lines.append(f'🧹 <a href="{safe_text_url}">{label}</a>')
+            lines.append(f'🧹 <a href="{safe_text_url}">Buka teks bersih (TXT)</a>')
+        else:
+            lines.append("🧹 Link TXT bersih belum aktif. Isi STREAMLIT_APP_URL atau TELEGRAM_TEXT_READER_APP_URL.")
         lines.append(f'🔗 <a href="{safe_url}">Buka berita asli</a>')
     return "\n".join(lines)
 
