@@ -10,6 +10,7 @@ from news_service import (
     fallback_queries,
     fetch_news,
     fetch_raw_markdown,
+    source_scoped_query,
     parse_search_response,
     parse_search_response_details,
     score_article_quality,
@@ -83,7 +84,7 @@ Kamis, 26 Jun 2026 23:50 WIB
         articles = parse_search_response(markdown, DETECTED_AT)
         self.assertEqual(len(articles), 1)
 
-    def test_social_content_is_kept_but_profiles_and_engagement_are_ignored(self) -> None:
+    def test_social_content_is_blocked_by_default_but_publishers_are_kept(self) -> None:
         markdown = """
 ### [Lainnya](https://www.instagram.com/contoh_akun/)
 27 Juni 2026
@@ -107,13 +108,10 @@ Program radio harian
 Sabtu, 27 Juni 2026 10:00 WIB
 """
         articles = parse_search_response(markdown, DETECTED_AT)
-        self.assertEqual(len(articles), 3)
-        self.assertEqual([item["source"] for item in articles], ["YouTube", "TikTok", "contoh.id"])
-        self.assertEqual([item["source_type"] for item in articles], ["social", "social", "publisher"])
+        self.assertEqual(len(articles), 1)
+        self.assertEqual(articles[0]["source"], "contoh.id")
+        self.assertEqual(articles[0]["source_type"], "publisher")
         self.assertEqual(articles[0]["category"], "Teknologi")
-        self.assertEqual(articles[1]["category"], "Otomotif")
-        self.assertNotIn("Subscribers", articles[0]["summary"])
-        self.assertNotIn("likes", articles[1]["summary"])
 
 
     def test_unverified_direct_article_is_available_only_as_dashboard_fallback(self) -> None:
@@ -196,7 +194,28 @@ Ringkasan berita yang membahas inovasi pendidikan digital di Indonesia.
         queries = fallback_queries("berita energi", datetime(2026, 6, 27, 10, 0))
         self.assertGreaterEqual(len(queries), 2)
         self.assertTrue(all("27 Juni 2026" in query for query in queries))
+        self.assertTrue(all("site:" in query for query in queries))
+        self.assertTrue(all("-site:youtube.com" in query for query in queries))
         self.assertEqual(len(queries), len(set(queries)))
+
+    def test_source_scoped_query_removes_social_terms(self) -> None:
+        query = source_scoped_query("berita ekonomi YouTube Instagram TikTok", datetime(2026, 6, 27, 10, 0))
+        self.assertIn("site:kompas.com", query)
+        self.assertIn("-site:youtube.com", query)
+        self.assertNotIn("Instagram TikTok", query)
+
+    def test_user_supplied_social_heavy_jina_payload_returns_no_articles(self) -> None:
+        payload = {
+            "code": 200,
+            "data": [
+                {"title": "Game Changer Pertumbuhan vs Insentif Otomotif | MARKET REVIEW", "url": "https://www.youtube.com/watch?v=abc", "date": "Dec 1, 2025"},
+                {"title": "Ekonomi Indonesia Terancam Rendah 2026? - TikTok", "url": "https://www.tiktok.com/@metro_tv/video/7592609955358821652", "date": "Jan 7, 2026"},
+                {"title": "Google Berita - Google News", "url": "https://news.google.com/home?hl=id&gl=ID&ceid=ID%3Aid"},
+                {"title": "Bloomberg Technoz Flash 5 kembali hadir", "url": "https://www.instagram.com/reel/DZ6btAWpAWD/", "date": "4 days ago"},
+            ],
+        }
+        articles = parse_search_response(payload, DETECTED_AT)
+        self.assertEqual(articles, [])
 
 
     def test_fetch_news_limits_slow_fallback_rounds(self) -> None:
@@ -205,7 +224,7 @@ Ringkasan berita yang membahas inovasi pendidikan digital di Indonesia.
 27 Juni 2026
 Ringkasan tentang teknologi Indonesia hari ini.
 """
-        with patch.dict(os.environ, {"NEWS_MAX_SEARCH_ROUNDS": "2"}, clear=False):
+        with patch.dict(os.environ, {"NEWS_MAX_SEARCH_ROUNDS": "2", "NEWS_ENABLE_RSS": "0"}, clear=False):
             with patch("news_service.jakarta_now", return_value=datetime(2026, 6, 27, 14, 0)):
                 with patch("news_service.fetch_raw_markdown", return_value=(markdown, {
                     "query": "berita",

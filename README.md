@@ -1,38 +1,52 @@
 # Monitor Berita Hari Ini dengan Streamlit, GitHub Actions, dan Telegram
 
-Aplikasi ini mencari berita melalui Jina Search (`s.jina.ai/?q=`) dengan respons JSON terstruktur bila tersedia, menyaring artikel yang memiliki marker waktu **hari ini** pada zona waktu Asia/Jakarta, memberi skor kualitas dan relevansi pada tiap tautan, mengelompokkan artikel berdasarkan kategori, dan mengirim tautan artikel baru ke Telegram. Versi ini memakai mode cepat Jina secara default agar proses tidak berlarut-larut. GitHub Actions menjalankan pemeriksaan setiap 30 menit. Streamlit memuat ulang dashboard setiap 5 menit.
+Aplikasi ini mencari berita terbaru dengan pendekatan **RSS-first, Jina Search fallback**. RSS penerbit resmi dicek lebih dulu karena biasanya lebih cepat, lebih bersih, dan langsung berisi URL artikel. Jika hasil RSS belum cukup, aplikasi baru memakai Jina Search (`s.jina.ai/?q=`) dengan kueri yang dibatasi ke domain media berita tepercaya dan diberi negative filter untuk sosial/video.
 
-## Fitur
+Tujuan versi ini: menghasilkan berita yang **bermutu, relevan, dan bukan sekadar kumpulan link acak**.
 
-- Query otomatis menambahkan tanggal Jakarta dan kategori utama: teknologi, edukasi, otomotif, ekonomi, olahraga, serta kesehatan.
-- Mengutamakan `Accept: application/json` ke Jina agar parser menerima `url`, `title`, `content`, dan `timestamp` bila tersedia; parser tetap mendukung Markdown sebagai fallback.
-- Mode Jina default adalah `X-Respond-With: no-content` supaya Search tidak mengambil isi penuh tiap halaman. Ini jauh lebih cepat untuk kebutuhan daftar berita; ubah ke `markdown` hanya bila butuh audit isi yang lebih lengkap.
-- Memprioritaskan artikel yang memiliki marker publikasi hari ini, misalnya `15 menit yang lalu`, `2 jam yang lalu`, `Hari ini`, tanggal Indonesia/Inggris, atau timestamp ISO pada tanggal Jakarta yang sama.
-- Bila hasil berkualitas masih kurang, aplikasi menjalankan kueri cadangan secara terbatas, lalu menggabungkan dan merangking hasilnya. Default maksimal hanya **2 pencarian per siklus** agar tidak lambat.
-- Tiap tautan diberi skor kualitas berdasarkan verifikasi waktu, bentuk URL artikel, reputasi domain editorial, kekayaan judul/ringkasan, sinyal clickbait/non-berita, kategori, dan relevansi dengan kueri. Hasil di bawah ambang tidak ditampilkan agar dashboard tidak sekadar berisi link acak.
-- Jika sumber tetap tidak memuat waktu, aplikasi hanya menampilkan tautan langsung sebagai **kandidat artikel** bila skornya tinggi dan memberi label “Perlu cek waktu”. Kandidat tidak disebut berita hari ini dan tidak dikirim ke Telegram.
-- Menolak artikel kemarin, gambar, ikon, iklan, menu, halaman kategori, halaman pencarian, URL perantara seperti Google News, parameter tracking, serta profil, kanal, program, pengikut, subscriber, likes, komentar, dan metrik akun.
-- Menerima konten sosial individual yang memiliki URL postingan atau video langsung, misalnya Instagram Post/Reel, YouTube Watch/Shorts, TikTok Video, X Post, Threads Post, Facebook Reel/Post, LinkedIn Post, Reddit Post, dan Telegram Post.
-- Semua tombol **Buka artikel asli** memakai URL langsung ke artikel penerbit atau postingan sosial individual. Aplikasi tidak menampilkan gambar hasil scraping maupun metrik engagement.
-- Kategori: Teknologi, Edukasi, Otomotif, Ekonomi & Bisnis, Olahraga, Kesehatan, Hiburan, Politik, Hukum & Kriminal, Internasional, Gaya Hidup & Perjalanan, Lingkungan & Cuaca, dan Lainnya.
-- Filter kategori serta judul atau sumber tersedia untuk hasil pencarian langsung dan hasil GitHub Actions. Kartu artikel juga menampilkan skor kualitas dan alasan lolos supaya mudah diaudit.
-- Respons Markdown mentah Jina tersedia pada panel audit, tetapi ditampilkan sebagai kode agar gambar, HTML, dan iklan tidak dimuat.
-- Telegram hanya menerima artikel atau konten sosial langsung yang waktu publikasinya terverifikasi hari ini dan belum pernah dikirim. Pesan memuat kategori, sumber, waktu, dan URL asli tanpa metrik engagement.
-- Token serta chat ID tidak tersimpan dalam source code.
+## Fitur utama
+
+- **RSS penerbit resmi diprioritaskan** sebelum SERP umum. Ini mengurangi hasil kacau seperti YouTube, TikTok, Instagram, Facebook, Google News, halaman kanal, dan link agregator.
+- Query default tidak lagi menyebut platform sosial/video. Jina fallback memakai query `site:` ke domain berita, misalnya Kompas, Detik, CNN Indonesia, CNBC Indonesia, Tempo, Antara, Liputan6, Bisnis, Katadata, Kontan, Republika, Kumparan, Tirto, Suara, dan Okezone.
+- Respons Jina tetap memakai mode cepat:
+  - `Accept: application/json`
+  - `X-Respond-With: no-content`
+  - `X-Retain-Images: none`
+  - `X-Md-Link-Style: discarded`
+  - `X-Timeout`
+- Parser mendukung JSON dan Markdown dari Jina, plus RSS/Atom XML dari publisher.
+- Hanya artikel dengan marker waktu **hari ini** pada zona waktu Asia/Jakarta yang diprioritaskan.
+- Marker waktu yang didukung:
+  - `15 menit yang lalu`, `2 jam yang lalu`, `1 hari yang lalu`
+  - `2 hours ago`, `4 days ago`
+  - `27 Juni 2026`, `Jun 27, 2026`, `Sat, 27 Jun 2026 10:00:00 +0700`
+  - timestamp ISO seperti `2026-06-27T12:00:00+07:00`
+- Artikel bertanggal lama, `kemarin`, `yesterday`, `1 hari yang lalu`, atau `4 days ago` tidak dipromosikan sebagai berita hari ini.
+- Skor kualitas menilai:
+  - waktu publikasi hari ini,
+  - domain editorial,
+  - URL yang terlihat seperti artikel,
+  - judul yang informatif,
+  - ringkasan,
+  - kategori,
+  - relevansi terhadap kata kunci,
+  - sinyal non-berita/clickbait.
+- Sosial/video **diblokir secara default**. Jika benar-benar ingin menerima konten sosial individual, aktifkan `NEWS_ALLOW_SOCIAL=1`, tetapi ini tidak disarankan untuk mode berita bermutu.
+- Telegram hanya mengirim artikel yang waktu publikasinya terverifikasi hari ini dan belum pernah dikirim.
+- Panel audit menampilkan sumber mentah RSS/Jina sebagai kode agar gambar, HTML, dan iklan tidak dimuat.
 
 ## Struktur proyek
 
 ```text
 .
-├── .github/workflows/news-monitor.yml
-├── .streamlit/
 ├── data/
 ├── tests/
 ├── app.py
 ├── news_service.py
 ├── storage.py
 ├── telegram.py
-└── worker.py
+├── worker.py
+└── requirements.txt
 ```
 
 ## Jalankan di komputer
@@ -41,29 +55,30 @@ Aplikasi ini mencari berita melalui Jina Search (`s.jina.ai/?q=`) dengan respons
 git clone <URL_REPOSITORI_ANDA>
 cd news_monitor_streamlit
 python -m venv .venv
-```
-
-Aktifkan virtual environment, lalu pasang dependensi:
-
-```bash
 pip install -r requirements.txt
 ```
 
-Salin `.env.example` menjadi `.env`, isi nilainya, lalu ekspor sebagai environment variable. Contoh Bash:
+Ekspor environment variable:
 
 ```bash
 export JINA_API_KEY="jina_kunci_anda"
 export TELEGRAM_BOT_TOKEN="token_bot_anda"
 export TELEGRAM_CHAT_ID="chat_id_anda"
-# Opsional tuning performa:
-export NEWS_MAX_SEARCH_ROUNDS="2"      # default 2; naikkan hanya jika rela lebih lambat
-export NEWS_REQUEST_TIMEOUT="25"       # timeout HTTP client
-export JINA_PAGE_TIMEOUT="12"          # timeout page-load di sisi Jina via X-Timeout
-export JINA_RESPOND_WITH="no-content"  # no-content = cepat, markdown = audit lebih lengkap
+
+# Default yang disarankan
+export NEWS_ENABLE_RSS="1"
+export NEWS_MAX_RSS_FEEDS="8"
+export NEWS_RSS_TIMEOUT="4"
+export NEWS_MAX_SEARCH_ROUNDS="2"
+export NEWS_REQUEST_TIMEOUT="25"
+export JINA_PAGE_TIMEOUT="12"
+export JINA_RESPOND_WITH="no-content"
+export NEWS_ALLOW_SOCIAL="0"
+
 python worker.py
 ```
 
-Untuk dashboard lokal, salin `.streamlit/secrets.toml.example` menjadi `.streamlit/secrets.toml`, isi `JINA_API_KEY`, lalu jalankan:
+Untuk dashboard lokal:
 
 ```bash
 streamlit run app.py
@@ -71,20 +86,72 @@ streamlit run app.py
 
 ## Deploy di GitHub dan Streamlit Community Cloud
 
-1. Buat repository GitHub baru, lalu unggah seluruh isi proyek ini.
-2. Di GitHub, buka **Settings > Secrets and variables > Actions > New repository secret**. Tambahkan `JINA_API_KEY`, `TELEGRAM_BOT_TOKEN`, dan `TELEGRAM_CHAT_ID`.
-3. Opsional, di **Settings > Secrets and variables > Actions > Variables**, buat `NEWS_QUERY` untuk mengganti kueri default. Untuk tuning performa, tambahkan `NEWS_MAX_SEARCH_ROUNDS`, `NEWS_REQUEST_TIMEOUT`, `JINA_PAGE_TIMEOUT`, atau `JINA_RESPOND_WITH`.
-4. Buka tab **Actions**, jalankan workflow **Pantau berita dan Telegram** dengan **Run workflow** satu kali untuk membuat data awal.
-5. Di Streamlit Community Cloud, buat aplikasi baru dari repo ini dengan file utama `app.py`.
-6. Pada **Settings > Secrets** Streamlit, masukkan:
+1. Buat repository GitHub baru, lalu unggah isi proyek ini.
+2. Di GitHub, buka **Settings > Secrets and variables > Actions > New repository secret**.
+3. Tambahkan `JINA_API_KEY`, `TELEGRAM_BOT_TOKEN`, dan `TELEGRAM_CHAT_ID`.
+4. Opsional, tambahkan variables berikut untuk tuning:
+   - `NEWS_QUERY`
+   - `NEWS_ENABLE_RSS`
+   - `NEWS_MAX_RSS_FEEDS`
+   - `NEWS_RSS_TIMEOUT`
+   - `NEWS_MAX_SEARCH_ROUNDS`
+   - `NEWS_REQUEST_TIMEOUT`
+   - `JINA_PAGE_TIMEOUT`
+   - `JINA_RESPOND_WITH`
+   - `NEWS_ALLOW_SOCIAL`
+5. Jalankan workflow GitHub Actions secara manual satu kali untuk membuat data awal.
+6. Di Streamlit Community Cloud, buat aplikasi dari repo ini dengan file utama `app.py`.
+7. Pada **Settings > Secrets** Streamlit, masukkan minimal:
 
 ```toml
 JINA_API_KEY = "jina_kunci_anda"
+NEWS_ENABLE_RSS = "1"
+NEWS_ALLOW_SOCIAL = "0"
 # Opsional. Isi URL raw GitHub untuk data/latest_news.json.
 NEWS_DATA_URL = ""
 ```
 
-`NEWS_DATA_URL` bersifat opsional. Bila diisi URL raw GitHub, dashboard mengambil data terbaru tanpa perlu menunggu deployment ulang.
+## Konfigurasi performa
+
+| Variable | Default | Fungsi |
+| --- | ---: | --- |
+| `NEWS_ENABLE_RSS` | `1` | Cek RSS publisher resmi sebelum Jina. Matikan hanya untuk debug. |
+| `NEWS_MAX_RSS_FEEDS` | `8` | Jumlah feed RSS yang dicek per siklus. |
+| `NEWS_RSS_TIMEOUT` | `4` | Timeout per feed RSS. Dibuat pendek agar tidak menunggu sumber lambat. |
+| `NEWS_MAX_SEARCH_ROUNDS` | `2` | Batas query Jina fallback per siklus. |
+| `NEWS_REQUEST_TIMEOUT` | `25` | Timeout HTTP client untuk Jina. |
+| `JINA_PAGE_TIMEOUT` | `12` | Header `X-Timeout` untuk Jina. |
+| `JINA_RESPOND_WITH` | `no-content` | Mode cepat. Gunakan `markdown` hanya untuk audit lebih lengkap. |
+| `NEWS_ALLOW_SOCIAL` | `0` | Jika `1`, postingan sosial individual boleh lolos. Default `0` agar hasil tetap editorial. |
+
+## Rekomendasi tuning
+
+Mode paling cepat dan bersih:
+
+```bash
+export NEWS_ENABLE_RSS="1"
+export NEWS_MAX_RSS_FEEDS="8"
+export NEWS_RSS_TIMEOUT="4"
+export NEWS_MAX_SEARCH_ROUNDS="1"
+export JINA_RESPOND_WITH="no-content"
+export NEWS_ALLOW_SOCIAL="0"
+```
+
+Mode recall lebih besar, tetapi lebih lambat:
+
+```bash
+export NEWS_ENABLE_RSS="1"
+export NEWS_MAX_RSS_FEEDS="10"
+export NEWS_MAX_SEARCH_ROUNDS="3"
+export JINA_RESPOND_WITH="no-content"
+```
+
+Mode audit isi lebih lengkap, tetapi paling lambat:
+
+```bash
+export JINA_RESPOND_WITH="markdown"
+export NEWS_MAX_SEARCH_ROUNDS="2"
+```
 
 ## Pengujian
 
@@ -92,19 +159,10 @@ NEWS_DATA_URL = ""
 python -m unittest discover -s tests -v
 ```
 
-## Konfigurasi performa
-
-| Variable | Default | Fungsi |
-| --- | ---: | --- |
-| `NEWS_MAX_SEARCH_ROUNDS` | `2` | Batas jumlah query Jina per siklus. Naikkan bila butuh recall lebih besar, turunkan ke `1` bila ingin paling cepat. |
-| `NEWS_REQUEST_TIMEOUT` | `25` | Timeout HTTP client Python. |
-| `JINA_PAGE_TIMEOUT` | `12` | Dikirim sebagai header `X-Timeout` ke Jina untuk membatasi waktu load halaman. |
-| `JINA_RESPOND_WITH` | `no-content` | Mode cepat. Gunakan `markdown` bila ingin panel audit berisi konten lebih lengkap, tetapi proses bisa lebih lama. |
-
 ## Catatan operasional
 
-- Tanggal dari sumber tidak selalu tersedia. Karena itu, tautan tanpa marker waktu hanya muncul sebagai kandidat verifikasi pada dashboard setelah pencarian terbatas selesai dan hanya bila skor kualitasnya tinggi. Kandidat tersebut tidak pernah dikirim sebagai notifikasi Telegram.
-- Artikel dengan marker relatif dihitung terhadap waktu pemeriksaan Jakarta. Contoh: pada pukul 00:30, artikel `2 jam yang lalu` dianggap berasal dari hari sebelumnya dan dikeluarkan.
-- GitHub Actions terjadwal dapat terlambat. Dashboard menunjukkan waktu pemeriksaan terakhir agar kondisi ini terlihat.
-- Batasi `NOTIFICATION_LIMIT` agar Telegram tidak menerima terlalu banyak pesan pada pemeriksaan pertama.
-- Putar ulang atau cabut token yang pernah dibagikan di chat, commit, screenshot, atau file publik.
+- RSS resmi bisa kosong atau lambat pada sebagian sumber; karena itu timeout dibuat pendek dan Jina hanya dipakai sebagai fallback.
+- Jina Search bukan mesin berita khusus. Tanpa `site:` dan negative filter, SERP dapat mengembalikan video, sosial, atau agregator. Versi ini sengaja mengunci fallback ke domain penerbit.
+- Tanggal relatif dihitung terhadap waktu Jakarta. Contoh: pukul `00:30`, artikel `2 jam yang lalu` dianggap berasal dari hari sebelumnya dan dikeluarkan.
+- Kandidat tanpa marker waktu tidak dikirim ke Telegram.
+- Putar ulang token yang pernah dibagikan di chat, commit, screenshot, atau file publik.

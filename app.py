@@ -31,7 +31,11 @@ def get_secret(name: str) -> str:
 
 def apply_runtime_config_from_secrets() -> None:
     """Izinkan konfigurasi performa dari Streamlit Secrets selain environment variable."""
-    for name in ("NEWS_MAX_SEARCH_ROUNDS", "NEWS_REQUEST_TIMEOUT", "JINA_PAGE_TIMEOUT", "JINA_RESPOND_WITH"):
+    for name in (
+        "NEWS_MAX_SEARCH_ROUNDS", "NEWS_REQUEST_TIMEOUT", "JINA_PAGE_TIMEOUT",
+        "JINA_RESPOND_WITH", "NEWS_ENABLE_RSS", "NEWS_RSS_TIMEOUT",
+        "NEWS_MAX_RSS_FEEDS", "NEWS_ALLOW_SOCIAL",
+    ):
         if os.getenv(name):
             continue
         value = get_secret(name)
@@ -145,28 +149,29 @@ def display_raw_response(raw_markdown: str, metadata: dict[str, str]) -> None:
     """Audit respons mentah tanpa merender gambar, HTML, atau tautan sumber."""
     if not raw_markdown:
         return
-    with st.expander("Audit respons mentah Jina", expanded=False):
+    with st.expander("Audit respons mentah sumber", expanded=False):
         st.caption(
             "Panel ini hanya untuk audit parser. Isi ditampilkan sebagai teks kode, sehingga gambar, "
             "iklan, dan HTML dari sumber tidak dimuat."
         )
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         col1.metric("Kandidat tautan", metadata.get("raw_candidates", "-"))
         col2.metric("Waktu terverifikasi", metadata.get("today_articles", "-"))
-        col3.metric("Pencarian dijalankan", metadata.get("search_rounds", "1"))
+        col3.metric("RSS dicek", metadata.get("rss_feeds_checked", "0"))
+        col4.metric("Pencarian Jina", metadata.get("search_rounds", "0"))
         st.code(raw_markdown, language="json", wrap_lines=True)
         st.download_button(
-            "Unduh respons Jina",
+            "Unduh respons sumber",
             data=raw_markdown,
-            file_name="respons-jina-berita.txt",
+            file_name="respons-sumber-berita.txt",
             mime="text/plain",
         )
 
 
 st.title("📰 Monitor Berita Hari Ini")
 st.caption(
-    "Artikel penerbit dan postingan sosial individual dengan tautan langsung ke konten asli. "
-    "Artikel bertanda waktu hari ini diprioritaskan. Bila sumber tidak memuat marker waktu, aplikasi menampilkan kandidat terpisah untuk diverifikasi."
+    "Artikel penerbit dari sumber berita resmi dengan tautan langsung ke konten asli. "
+    "RSS penerbit dicek lebih dulu agar cepat dan bersih; Jina Search dipakai sebagai fallback yang dibatasi ke domain berita."
 )
 
 with st.sidebar:
@@ -174,8 +179,9 @@ with st.sidebar:
     st.write("Token Jina:", "✅ tersedia" if get_secret("JINA_API_KEY") else "⚠️ belum diatur")
     st.write("Pembaruan dashboard:", "otomatis setiap 5 menit")
     st.write("Notifikasi Telegram:", "dikirim oleh GitHub Actions")
+    st.write("RSS penerbit:", "✅ aktif" if os.getenv("NEWS_ENABLE_RSS", "1") not in {"0", "false", "False"} else "nonaktif")
     st.write("Mode Jina:", os.getenv("JINA_RESPOND_WITH", "no-content"))
-    st.write("Maks. pencarian/siklus:", os.getenv("NEWS_MAX_SEARCH_ROUNDS", "2"))
+    st.write("Maks. pencarian Jina/siklus:", os.getenv("NEWS_MAX_SEARCH_ROUNDS", "2"))
     st.divider()
     st.caption("Buka sumber asli untuk memeriksa isi, konteks, dan waktu publikasi artikel.")
 
@@ -189,10 +195,10 @@ metric_middle.metric("Kategori", len({item.get("category", "Lainnya") for item i
 metric_right.metric("Tanggal pencarian", metadata.get("today_jakarta", "Belum ada"))
 metric_last.metric("Pembaruan terakhir", metadata.get("fetched_at", "Belum ada"))
 
-with st.expander("Cari langsung dari Jina Search", expanded=True):
+with st.expander("Cari berita langsung", expanded=True):
     st.caption(
-        "Sistem membuang gambar, menu, profil sosial, kanal, angka followers, likes, subscribers, URL perantara, "
-        "dan artikel kemarin. Pencarian cadangan dibatasi agar proses tetap cepat, lalu hasil diranking sebelum ditampilkan."
+        "Sistem mengecek RSS penerbit resmi terlebih dahulu, lalu memakai Jina Search hanya sebagai fallback source-scoped. "
+        "Sosial/video, Google News, gambar, menu, kanal, metrik engagement, dan artikel lama dibuang."
     )
     query = st.text_input("Kata kunci", value=default_query())
     if st.button("Cari berita terbaru hari ini", type="primary"):
@@ -219,7 +225,8 @@ with st.expander("Cari langsung dari Jina Search", expanded=True):
                 else:
                     st.success(
                         f"{verified_count} artikel dengan waktu hari ini terdeteksi dari "
-                        f"{live_metadata.get('raw_candidates', '0')} kandidat tautan melalui {rounds} pencarian."
+                        f"{live_metadata.get('raw_candidates', '0')} kandidat tautan. "
+                        f"RSS dicek: {live_metadata.get('rss_feeds_checked', '0')}, Jina: {rounds} pencarian."
                     )
             except requests.RequestException as error:
                 st.error(f"Permintaan ke Jina gagal: {error}")
@@ -244,8 +251,8 @@ with st.expander("Cari langsung dari Jina Search", expanded=True):
         render_grouped_articles(filtered_live, "Tidak ada artikel yang sesuai filter kategori atau sumber.")
     elif raw_markdown:
         st.warning(
-            "Pencarian cadangan sudah dijalankan, tetapi belum ditemukan halaman artikel langsung yang dapat diekstrak. "
-            "Gunakan kata kunci yang lebih spesifik atau periksa panel audit respons."
+            "Belum ditemukan artikel penerbit yang punya marker waktu hari ini. "
+            "Panel audit memperlihatkan RSS/pencarian yang dicek serta tautan yang ditolak."
         )
     if raw_markdown:
         display_raw_response(raw_markdown, live_metadata)

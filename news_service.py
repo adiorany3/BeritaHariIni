@@ -1,18 +1,22 @@
-"""Ambil, saring, kategorikan, dan normalisasi berita dari Jina Search.
+"""Ambil, saring, kategorikan, dan normalisasi berita dari RSS penerbit + Jina Search.
 
-Modul hanya menghasilkan tautan artikel penerbit atau tautan postingan sosial
-individual. Gambar, profil, metrik engagement, iklan, menu, halaman kategori,
-dan perantara seperti Google News dikeluarkan.
+Modul memprioritaskan tautan artikel penerbit resmi. Platform sosial/video, gambar,
+profil, metrik engagement, iklan, menu, halaman kategori, dan perantara seperti
+Google News dikeluarkan secara default.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from hashlib import sha256
+from html import unescape
 import json
 import os
 import re
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from xml.etree import ElementTree
 from zoneinfo import ZoneInfo
 
 import requests
@@ -133,8 +137,8 @@ TRACKING_QUERY_KEYS = {
     "fbclid", "gclid", "dclid", "mc_cid", "mc_eid", "igshid", "si", "spm",
     "ocid", "cmpid", "ito", "ref", "ref_src", "feature", "app", "from",
 }
-# Mesin pencari dan URL utilitas tidak boleh muncul sebagai hasil berita.
-# Platform sosial tidak diblokir di sini karena postingan atau video individual dapat menjadi konten berita.
+# Mesin pencari, URL utilitas, dan platform sosial tidak boleh muncul sebagai hasil berita
+# default. Tujuan aplikasi ini adalah tautan artikel penerbit, bukan video/postingan acak.
 BLOCKED_HOSTS = {
     "google.com", "news.google.com", "googleusercontent.com", "jina.ai", "s.jina.ai",
     "bit.ly", "tinyurl.com",
@@ -156,6 +160,11 @@ SOCIAL_SOURCE_LABELS = {
     "pinterest.com": "Pinterest",
 }
 SOCIAL_HOSTS = frozenset(SOCIAL_SOURCE_LABELS)
+SOCIAL_NEGATIVE_QUERY = (
+    "-site:youtube.com -site:youtu.be -site:instagram.com -site:tiktok.com "
+    "-site:facebook.com -site:x.com -site:twitter.com -site:threads.net "
+    "-site:linkedin.com -site:reddit.com -site:news.google.com"
+)
 
 # Sumber tepercaya diberi bobot lebih tinggi, tetapi daftar ini bukan allow-list keras.
 # Tujuannya mendorong hasil editorial yang jelas tanpa mematikan sumber lokal yang valid.
@@ -169,6 +178,28 @@ TRUSTED_NEWS_HOSTS = {
     "apnews.com", "aljazeera.com", "theguardian.com", "nytimes.com",
     "bloomberg.com", "channelnewsasia.com", "straitstimes.com",
 }
+PREFERRED_SEARCH_DOMAINS = (
+    "kompas.com", "detik.com", "cnnindonesia.com", "cnbcindonesia.com", "tempo.co",
+    "antaranews.com", "liputan6.com", "bisnis.com", "katadata.co.id", "kontan.co.id",
+    "republika.co.id", "kumparan.com", "tirto.id", "suara.com", "okezone.com",
+)
+PUBLISHER_SEARCH_GROUPS = (
+    ("kompas.com", "detik.com", "cnnindonesia.com", "cnbcindonesia.com", "tempo.co"),
+    ("antaranews.com", "liputan6.com", "bisnis.com", "katadata.co.id", "kontan.co.id"),
+    ("republika.co.id", "kumparan.com", "tirto.id", "suara.com", "okezone.com"),
+)
+RSS_FEEDS = (
+    {"source": "detik.com", "url": "https://rss.detik.com/index.php/detikcom"},
+    {"source": "kompas.com", "url": "https://www.kompas.com/rss"},
+    {"source": "cnnindonesia.com", "url": "https://www.cnnindonesia.com/nasional/rss"},
+    {"source": "cnbcindonesia.com", "url": "https://www.cnbcindonesia.com/news/rss"},
+    {"source": "tempo.co", "url": "https://rss.tempo.co/nasional"},
+    {"source": "antaranews.com", "url": "https://www.antaranews.com/rss/terkini.xml"},
+    {"source": "liputan6.com", "url": "https://www.liputan6.com/feed/rss"},
+    {"source": "bisnis.com", "url": "https://www.bisnis.com/rss"},
+    {"source": "republika.co.id", "url": "https://www.republika.co.id/rss"},
+    {"source": "suara.com", "url": "https://www.suara.com/rss/news"},
+)
 KNOWN_NEWS_PATH_HINTS = {
     "news", "berita", "read", "artikel", "nasional", "regional", "internasional",
     "ekonomi", "bisnis", "tekno", "teknologi", "otomotif", "edukasi", "health",
@@ -198,6 +229,10 @@ DEFAULT_MAX_SEARCH_ROUNDS = 2
 DEFAULT_REQUEST_TIMEOUT = 25
 DEFAULT_JINA_PAGE_TIMEOUT = 12
 DEFAULT_JINA_RESPOND_WITH = "no-content"
+DEFAULT_RSS_TIMEOUT = 4
+DEFAULT_MAX_RSS_FEEDS = 8
+DEFAULT_ENABLE_RSS = True
+DEFAULT_ALLOW_SOCIAL = False
 MIN_VERIFIED_QUALITY_SCORE = 58
 MIN_UNVERIFIED_QUALITY_SCORE = 72
 
@@ -239,6 +274,9 @@ LINK_RE = re.compile(r"(?<![!\[])\[([^\]\n]{3,300})\]\((https?://[^\s)]+)\)")
 RELATIVE_TIME_RE = re.compile(
     r"\b(\d{1,3})\s*(menit|jam|detik|hari)\s*(?:yang\s*)?lalu\b", re.IGNORECASE
 )
+EN_RELATIVE_TIME_RE = re.compile(
+    r"\b(\d{1,3})\s*(seconds?|minutes?|hours?|days?)\s+ago\b", re.IGNORECASE
+)
 DAY_MONTH_RE = re.compile(
     r"\b(?:senin|selasa|rabu|kamis|jumat|jum'at|sabtu|minggu)?\s*,?\s*"
     r"(\d{1,2})\s+(jan(?:uari)?|feb(?:ruari)?|mar(?:et)?|apr(?:il)?|mei|"
@@ -262,7 +300,14 @@ ENGLISH_MONTH_NUMBERS = {
     "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
     "july": 7, "august": 8, "september": 9, "october": 10, "november": 11,
     "december": 12,
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "jun": 6, "jul": 7, "aug": 8,
+    "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
 }
+RFC_LIKE_DATE_RE = re.compile(
+    r"\b(?:mon|tue|wed|thu|fri|sat|sun),?\s+\d{1,2}\s+"
+    r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\s+\d{4}",
+    re.IGNORECASE,
+)
 
 
 def jakarta_now() -> datetime:
@@ -293,7 +338,8 @@ def default_query(now: datetime | None = None) -> str:
     """Buat kueri luas dengan konteks tanggal Jakarta dan kategori utama."""
     return (
         f"Berita Indonesia terbaru hari ini {today_indonesia(now)} "
-        "teknologi edukasi otomotif ekonomi olahraga kesehatan konten berita YouTube Instagram TikTok X"
+        "teknologi edukasi otomotif ekonomi olahraga kesehatan politik hukum internasional "
+        "artikel media nasional"
     )
 
 
@@ -315,9 +361,36 @@ def _env_int(name: str, default: int, *, minimum: int = 1, maximum: int | None =
     return value
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "y", "on"}
+
+
 def configured_max_search_rounds() -> int:
     """Jumlah pencarian Jina maksimal per siklus. Default dibuat rendah agar respons cepat."""
     return _env_int("NEWS_MAX_SEARCH_ROUNDS", DEFAULT_MAX_SEARCH_ROUNDS, minimum=1, maximum=6)
+
+
+def configured_enable_rss() -> bool:
+    """RSS penerbit resmi aktif secara default karena lebih cepat dan lebih bersih dari SERP umum."""
+    return _env_bool("NEWS_ENABLE_RSS", DEFAULT_ENABLE_RSS)
+
+
+def configured_allow_social() -> bool:
+    """Konten sosial dinonaktifkan default agar hasil tidak kacau oleh video/postingan."""
+    return _env_bool("NEWS_ALLOW_SOCIAL", DEFAULT_ALLOW_SOCIAL)
+
+
+def configured_rss_timeout(default: int = DEFAULT_RSS_TIMEOUT) -> int:
+    """Timeout pendek untuk setiap feed RSS agar tidak memperlambat keseluruhan proses."""
+    return _env_int("NEWS_RSS_TIMEOUT", default, minimum=3, maximum=20)
+
+
+def configured_max_rss_feeds() -> int:
+    """Batas feed RSS yang dicek per siklus."""
+    return _env_int("NEWS_MAX_RSS_FEEDS", DEFAULT_MAX_RSS_FEEDS, minimum=0, maximum=len(RSS_FEEDS))
 
 
 def configured_request_timeout(default: int = DEFAULT_REQUEST_TIMEOUT) -> int:
@@ -339,6 +412,30 @@ def configured_jina_respond_with() -> str:
 def _clean_text(value: Any, limit: int = 500) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
     return text[:limit]
+
+
+def _strip_html(value: Any, limit: int = 700) -> str:
+    """Ringkas teks dari RSS/HTML tanpa membawa tag, gambar, atau entities."""
+    text = str(value or "")
+    text = re.sub(r"<script\b[^>]*>.*?</script>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<style\b[^>]*>.*?</style>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = unescape(text)
+    return _clean_text(text, limit)
+
+
+def _rfc_datetime_to_iso(value: str, now: datetime | None = None) -> str:
+    """Ubah tanggal RFC 2822/RSS ke ISO Jakarta bila bisa."""
+    text = _clean_text(value, 200)
+    if not text:
+        return ""
+    try:
+        parsed = parsedate_to_datetime(text)
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return ""
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=JAKARTA)
+    return parsed.astimezone(JAKARTA).isoformat()
 
 
 def _valid_url(value: Any) -> str:
@@ -440,7 +537,7 @@ def _is_social_content_url(url: str) -> bool:
 
 
 def _looks_like_direct_article(title: str, url: str) -> bool:
-    """Terima artikel penerbit atau konten sosial individual, bukan gambar maupun halaman navigasi."""
+    """Terima artikel penerbit. Konten sosial hanya boleh bila NEWS_ALLOW_SOCIAL=1."""
     title = _clean_text(title, 300)
     if len(title) < MIN_HEADLINE_LENGTH or not url:
         return False
@@ -461,7 +558,7 @@ def _looks_like_direct_article(title: str, url: str) -> bool:
         return False
 
     if _is_social_host(host):
-        return _is_social_content_url(url)
+        return configured_allow_social() and _is_social_content_url(url)
 
     segments = [segment for segment in path.split("/") if segment]
     if not segments:
@@ -536,6 +633,11 @@ def _is_today_from_text(value: str, now: datetime) -> tuple[bool, str]:
     lower = text.lower()
     if "kemarin" in lower or "yesterday" in lower or "hari lalu" in lower:
         return False, ""
+
+    rfc_iso = _rfc_datetime_to_iso(text, now)
+    if rfc_iso:
+        parsed_dt = _as_jakarta(rfc_iso)
+        return parsed_dt.date() == now.date(), parsed_dt.strftime("%Y-%m-%dT%H:%M:%S")
 
     # Tanggal eksplisit selalu lebih kuat daripada marker relatif.
     match = DAY_MONTH_RE.search(text)
@@ -631,6 +733,7 @@ def _has_publication_signal(value: str) -> bool:
     lower = text.lower()
     return bool(
         RELATIVE_TIME_RE.search(text)
+        or EN_RELATIVE_TIME_RE.search(text)
         or DAY_MONTH_RE.search(text)
         or NUMERIC_DATE_RE.search(text)
         or ISO_DATE_RE.search(text)
@@ -678,6 +781,8 @@ def _normalise_item(
         or raw.get("lastUpdated")
         or raw.get("created_at")
         or raw.get("date")
+        or raw.get("pubDate")
+        or raw.get("updated")
         or raw.get("published")
         or raw.get("time"),
         150,
@@ -697,8 +802,8 @@ def _normalise_item(
         published_at = "Waktu belum terdeteksi"
         time_note = "Waktu publikasi belum ditemukan di respons pencarian. Periksa waktu pada sumber asli."
 
-    # Postingan sosial individual tetap dipertahankan. Metrik seperti likes dan subscribers
-    # hanya dihapus dari ringkasan, bukan dijadikan dasar penolakan konten.
+    # Postingan sosial hanya bisa sampai sini bila NEWS_ALLOW_SOCIAL=1. Metrik seperti
+    # likes dan subscribers tetap dibuang dari ringkasan.
     if is_social:
         description = _strip_social_metrics(description)
     elif _looks_like_social_or_profile_context(title, description, publication_context, url):
@@ -1104,27 +1209,198 @@ def parse_search_response(
     return articles
 
 
-def fallback_queries(primary_query: str, now: datetime | None = None) -> list[str]:
-    """Buat kueri cadangan yang lebih sederhana saat respons awal tidak menghasilkan artikel."""
+def _domain_filter_query(domains: tuple[str, ...] | list[str]) -> str:
+    return " OR ".join(f"site:{domain}" for domain in domains)
+
+
+def _strip_query_noise(query: str) -> str:
+    """Buang operator sosial lama agar input user tidak kembali menarik video/postingan."""
+    cleaned = re.sub(
+        r"\b(?:youtube|instagram|tiktok|facebook|twitter|threads|x\.com|google news|news\.google\.com)\b",
+        " ",
+        query,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"-site:\S+", " ", cleaned)
+    return _clean_text(cleaned, 360)
+
+
+def source_scoped_query(primary_query: str, now: datetime | None = None, domains: tuple[str, ...] | list[str] | None = None) -> str:
+    """Paksa SERP mencari di domain berita, bukan platform sosial/video."""
     now = _as_jakarta(now)
     today = today_indonesia(now)
+    base = _strip_query_noise(primary_query) or default_query(now)
+    domain_filter = _domain_filter_query(tuple(domains or PUBLISHER_SEARCH_GROUPS[0]))
+    return _clean_text(
+        f"({domain_filter}) {base} {today} artikel berita terbaru {SOCIAL_NEGATIVE_QUERY}",
+        700,
+    )
+
+
+def fallback_queries(primary_query: str, now: datetime | None = None) -> list[str]:
+    """Buat kueri cadangan yang source-scoped agar SERP tidak lari ke sosial/video."""
+    now = _as_jakarta(now)
+    today = today_indonesia(now)
+    base = _strip_query_noise(primary_query)
     candidates = [
-        f"{primary_query.strip()} berita terbaru {today}",
-        f"Berita nasional Indonesia terbaru hari ini {today}",
-        f"Berita ekonomi bisnis Indonesia terbaru hari ini {today}",
-        f"Berita teknologi pendidikan kesehatan terbaru Indonesia {today}",
-        f"Berita olahraga otomotif hiburan terbaru Indonesia {today}",
-        f"Berita dunia internasional terbaru hari ini {today}",
+        source_scoped_query(base, now, group) for group in PUBLISHER_SEARCH_GROUPS
+    ] + [
+        f"({_domain_filter_query(PREFERRED_SEARCH_DOMAINS[:8])}) berita nasional Indonesia terbaru {today} {SOCIAL_NEGATIVE_QUERY}",
+        f"({_domain_filter_query(PREFERRED_SEARCH_DOMAINS[:8])}) ekonomi teknologi politik kesehatan Indonesia {today} artikel {SOCIAL_NEGATIVE_QUERY}",
     ]
     unique: list[str] = []
-    seen: set[str] = {primary_query.casefold().strip()}
+    seen: set[str] = set()
     for candidate in candidates:
-        candidate = _clean_text(candidate, 500)
+        candidate = _clean_text(candidate, 700)
         key = candidate.casefold()
         if candidate and key not in seen:
             unique.append(candidate)
             seen.add(key)
     return unique
+
+
+def _xml_text(element: ElementTree.Element, *names: str) -> str:
+    for name in names:
+        found = element.find(name)
+        if found is not None and found.text:
+            return found.text.strip()
+        for child in list(element):
+            tag = child.tag.split("}")[-1].lower()
+            if tag == name.lower() and child.text:
+                return child.text.strip()
+    return ""
+
+
+def _xml_link(element: ElementTree.Element) -> str:
+    link = _xml_text(element, "link")
+    if link:
+        return link
+    for child in list(element):
+        tag = child.tag.split("}")[-1].lower()
+        if tag == "link":
+            href = child.attrib.get("href", "").strip()
+            rel = child.attrib.get("rel", "alternate")
+            if href and rel in {"alternate", ""}:
+                return href
+    return ""
+
+
+def _rss_items_from_xml(xml_text: str, *, feed_source: str, detected_at: str, now: datetime) -> list[dict[str, Any]]:
+    """Parse RSS/Atom penerbit resmi menjadi item artikel."""
+    try:
+        root = ElementTree.fromstring(xml_text.encode("utf-8"))
+    except ElementTree.ParseError:
+        return []
+
+    nodes = list(root.findall(".//item"))
+    if not nodes:
+        nodes = [node for node in root.findall(".//{*}entry")]
+
+    articles: list[dict[str, Any]] = []
+    for node in nodes[:30]:
+        title = _strip_html(_xml_text(node, "title"), 300)
+        url = _valid_url(_xml_link(node))
+        pub_raw = (
+            _xml_text(node, "pubDate")
+            or _xml_text(node, "published")
+            or _xml_text(node, "updated")
+            or _xml_text(node, "date")
+        )
+        pub_iso = _rfc_datetime_to_iso(pub_raw, now) or pub_raw
+        summary = _strip_html(
+            _xml_text(node, "description")
+            or _xml_text(node, "summary")
+            or _xml_text(node, "content")
+            or _xml_text(node, "encoded"),
+            600,
+        )
+        item = _normalise_item(
+            {
+                "title": title,
+                "url": url,
+                "description": summary,
+                "timestamp": pub_iso,
+                "source": feed_source,
+            },
+            detected_at,
+            now,
+            publication_context=pub_iso,
+        )
+        if item:
+            # RSS berasal dari feed penerbit, jadi tampilkan root/domain penerbit sebagai sumber.
+            item["source"] = _host(url) or feed_source
+            item["source_type"] = "publisher"
+            articles.append(item)
+    return articles
+
+
+def _fetch_one_rss(feed: dict[str, str], *, detected_at: str, now: datetime, timeout: int) -> tuple[list[dict[str, Any]], str]:
+    url = feed["url"]
+    try:
+        response = requests.get(
+            url,
+            headers={"User-Agent": "news-monitor-streamlit/5.0-rss-first"},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+    except requests.RequestException as error:
+        return [], f"## RSS {feed.get('source', url)}\nERROR: {error}"
+    items = _rss_items_from_xml(
+        response.text,
+        feed_source=feed.get("source", ""),
+        detected_at=detected_at,
+        now=now,
+    )
+    preview = response.text[:2_000].strip()
+    return items, f"## RSS {feed.get('source', url)}\nURL: {url}\nArtikel hari ini terdeteksi: {len(items)}\n\n{preview}"
+
+
+def fetch_rss_articles(
+    query: str,
+    max_results: int,
+    *,
+    now: datetime,
+    timeout: int | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, str], str]:
+    """Ambil artikel dari RSS penerbit resmi sebelum memakai Jina SERP umum."""
+    detected_at = now.isoformat()
+    metadata = {
+        "rss_enabled": str(configured_enable_rss()).lower(),
+        "rss_articles": "0",
+        "rss_feeds_checked": "0",
+        "rss_timeout_seconds": str(configured_rss_timeout(timeout or DEFAULT_RSS_TIMEOUT)),
+    }
+    if not configured_enable_rss():
+        return [], metadata, ""
+
+    feed_limit = configured_max_rss_feeds()
+    feeds = list(RSS_FEEDS[:feed_limit])
+    if not feeds:
+        return [], metadata, ""
+
+    per_feed_timeout = configured_rss_timeout(timeout or DEFAULT_RSS_TIMEOUT)
+    all_items: list[dict[str, Any]] = []
+    raw_sections: list[str] = []
+    workers = min(6, len(feeds))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [
+            executor.submit(_fetch_one_rss, feed, detected_at=detected_at, now=now, timeout=per_feed_timeout)
+            for feed in feeds
+        ]
+        for future in as_completed(futures):
+            items, raw = future.result()
+            all_items.extend(items)
+            if raw:
+                raw_sections.append(raw)
+
+    ranked = _rank_and_filter(all_items, query, max_results)
+    metadata.update(
+        {
+            "rss_articles": str(len(ranked)),
+            "rss_feeds_checked": str(len(feeds)),
+        }
+    )
+    return ranked, metadata, "\n\n---\n\n".join(raw_sections)
 
 
 def fetch_raw_markdown(
@@ -1145,7 +1421,7 @@ def fetch_raw_markdown(
         raise ValueError("JINA_API_KEY belum diatur.")
 
     current_now = _as_jakarta(now)
-    query = (query or default_query(current_now)).strip()
+    query = (query or source_scoped_query(default_query(current_now), current_now)).strip()
     request_timeout = configured_request_timeout(timeout or DEFAULT_REQUEST_TIMEOUT)
     page_timeout = configured_jina_page_timeout(min(request_timeout, DEFAULT_JINA_PAGE_TIMEOUT))
     response_mode = (respond_with or configured_jina_respond_with()).strip().lower()
@@ -1194,48 +1470,69 @@ def _fetch_rounds(
     allow_unverified_fallback: bool,
     max_search_rounds: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, str], str]:
-    """Jalankan pencarian utama lalu beberapa kueri cadangan sampai hasil berkualitas cukup."""
+    """RSS penerbit resmi dulu, lalu Jina Search source-scoped bila hasil belum cukup."""
     now = jakarta_now()
     primary_query = (query or default_query(now)).strip()
-    all_queries = [primary_query, *fallback_queries(primary_query, now)]
-    round_limit = max(1, min(max_search_rounds or configured_max_search_rounds(), len(all_queries)))
-    queries = all_queries[:round_limit]
-    raw_sections: list[str] = []
-    parsed_rounds: list[tuple[list[dict[str, Any]], dict[str, int], str]] = []
-    metadata: dict[str, str] | None = None
     target_results = min(max_results, QUALITY_TARGET_RESULTS)
+    raw_sections: list[str] = []
+    metadata: dict[str, str] = {
+        "query": primary_query,
+        "fetched_at": now.isoformat(),
+        "today_jakarta": today_indonesia(now),
+        "content_type": "mixed/rss+jina",
+        "response_format": "rss_first_json_preferred",
+        "jina_respond_with": configured_jina_respond_with(),
+        "request_timeout_seconds": str(configured_request_timeout(timeout or DEFAULT_REQUEST_TIMEOUT)),
+        "jina_page_timeout_seconds": str(configured_jina_page_timeout(min(timeout or DEFAULT_REQUEST_TIMEOUT, DEFAULT_JINA_PAGE_TIMEOUT))),
+        "quality_threshold_verified": str(MIN_VERIFIED_QUALITY_SCORE),
+        "quality_threshold_unverified": str(MIN_UNVERIFIED_QUALITY_SCORE),
+    }
 
-    for index, search_query in enumerate(queries):
-        raw_markdown, round_metadata = fetch_raw_markdown(
-            api_key, query=search_query, timeout=timeout, now=now
-        )
-        metadata = metadata or dict(round_metadata)
-        raw_sections.append(f"# Respons pencarian {index + 1}\n\n{raw_markdown}")
-        verified, stats = parse_search_response_details(
-            raw_markdown, round_metadata["fetched_at"], max_results
-        )
-        parsed_rounds.append((verified, stats, search_query))
+    rss_items, rss_metadata, rss_raw = fetch_rss_articles(primary_query, max_results, now=now)
+    metadata.update(rss_metadata)
+    if rss_raw:
+        raw_sections.append(f"# Respons RSS penerbit resmi\n\n{rss_raw}")
 
-        verified_items: list[dict[str, Any]] = []
-        for items, _, item_query in parsed_rounds:
-            verified_items.extend(_apply_quality_scores(items, item_query))
-        if len(_rank_and_filter(verified_items, primary_query, max_results)) >= target_results:
-            break
+    articles = _rank_and_filter(rss_items, primary_query, max_results)
+    parsed_rounds: list[tuple[list[dict[str, Any]], dict[str, int], str]] = []
 
-    assert metadata is not None
-    verified_items = []
-    for items, _, item_query in parsed_rounds:
-        verified_items.extend(_apply_quality_scores(items, item_query))
-    articles = _rank_and_filter(verified_items, primary_query, max_results)
+    # Bila RSS resmi sudah cukup, jangan panggil Jina sama sekali. Ini jauh lebih cepat dan
+    # menghindari SERP sosial/video yang kurang relevan.
+    round_limit = max(0, min(max_search_rounds or configured_max_search_rounds(), len(PUBLISHER_SEARCH_GROUPS)))
+    if len(articles) < target_results and round_limit > 0:
+        if not api_key:
+            raise ValueError("JINA_API_KEY belum diatur dan hasil RSS belum cukup.")
+        all_queries = fallback_queries(primary_query, now)
+        queries = all_queries[:round_limit]
+        for index, search_query in enumerate(queries):
+            raw_markdown, round_metadata = fetch_raw_markdown(
+                api_key, query=search_query, timeout=timeout, now=now
+            )
+            metadata.update({
+                "content_type": round_metadata.get("content_type", metadata.get("content_type", "")),
+                "response_format": round_metadata.get("response_format", metadata.get("response_format", "")),
+                "jina_respond_with": round_metadata.get("jina_respond_with", metadata.get("jina_respond_with", "")),
+                "request_timeout_seconds": round_metadata.get("request_timeout_seconds", metadata.get("request_timeout_seconds", "")),
+                "jina_page_timeout_seconds": round_metadata.get("jina_page_timeout_seconds", metadata.get("jina_page_timeout_seconds", "")),
+            })
+            raw_sections.append(f"# Respons pencarian Jina {index + 1}\n\nQuery: {search_query}\n\n{raw_markdown}")
+            verified, stats = parse_search_response_details(
+                raw_markdown, round_metadata["fetched_at"], max_results
+            )
+            parsed_rounds.append((verified, stats, search_query))
 
-    # Tampilan Streamlit tidak dibiarkan kosong apabila respons berisi tautan artikel
-    # langsung tanpa marker waktu. Status dan kartu memperjelas bahwa waktu belum diverifikasi.
+            combined_verified: list[dict[str, Any]] = [*_apply_quality_scores(rss_items, primary_query)]
+            for items, _, item_query in parsed_rounds:
+                combined_verified.extend(_apply_quality_scores(items, item_query))
+            articles = _rank_and_filter(combined_verified, primary_query, max_results)
+            if len(articles) >= target_results:
+                break
+
     used_unverified = False
-    if not articles and allow_unverified_fallback:
+    if not articles and allow_unverified_fallback and parsed_rounds:
         unverified_items: list[dict[str, Any]] = []
         for raw_section, (_, _, item_query) in zip(raw_sections, parsed_rounds):
-            # Hilangkan heading audit buatan sebelum mem-parsing ulang.
-            raw = raw_section.split("\n\n", 1)[1] if "\n\n" in raw_section else raw_section
+            raw = raw_section.split("\n\n", 2)[-1] if "\n\n" in raw_section else raw_section
             items, _ = parse_search_response_details(
                 raw,
                 metadata["fetched_at"],
@@ -1247,6 +1544,7 @@ def _fetch_rounds(
         used_unverified = bool(articles)
 
     raw_candidates = sum(stats["raw_candidates"] for _, stats, _ in parsed_rounds)
+    raw_candidates += len(rss_items)
     verified_count = sum(item.get("time_status") == "verified_today" for item in articles)
     unverified_count = sum(item.get("time_status") == "needs_time_verification" for item in articles)
     metadata.update(
@@ -1256,7 +1554,7 @@ def _fetch_rounds(
             "today_articles": str(verified_count),
             "unverified_articles": str(unverified_count),
             "search_rounds": str(len(parsed_rounds)),
-            "fallback_search_used": "true" if len(parsed_rounds) > 1 else "false",
+            "fallback_search_used": "true" if parsed_rounds else "false",
             "max_search_rounds": str(round_limit),
             "target_results_for_fast_stop": str(target_results),
             "result_mode": "verified_today" if verified_count else (
@@ -1274,7 +1572,7 @@ def fetch_news(
     timeout: int | None = None,
     max_search_rounds: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    """Ambil berita terverifikasi, atau kandidat artikel langsung bila marker waktu tidak tersedia.
+    """Ambil berita terverifikasi dari RSS/Jina, atau kandidat audit bila waktu tidak tersedia.
 
     Worker menyimpan kandidat fallback agar dashboard tidak kosong, tetapi worker harus
     memfilter `time_status` sebelum mengirim notifikasi Telegram.
@@ -1297,7 +1595,7 @@ def fetch_news_with_raw(
     timeout: int | None = None,
     max_search_rounds: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, str], str]:
-    """Varian Streamlit dengan pencarian cadangan dan respons Markdown untuk audit."""
+    """Varian Streamlit dengan RSS/Jina mentah untuk audit."""
     return _fetch_rounds(
         api_key,
         query,
