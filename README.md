@@ -1,8 +1,10 @@
-# Monitor Berita Hari Ini dengan Streamlit, GitHub Actions, dan Telegram
+# Monitor Berita Hari Ini dengan Streamlit
 
 Aplikasi ini mencari berita terbaru dengan pendekatan **RSS-first, Jina Search fallback**. RSS penerbit resmi dicek lebih dulu karena biasanya lebih cepat, lebih bersih, dan langsung berisi URL artikel. Jika hasil RSS belum cukup, aplikasi baru memakai Jina Search (`s.jina.ai/?q=`) dengan kueri yang dibatasi ke domain media berita tepercaya dan diberi negative filter untuk sosial/video.
 
 Tujuan versi ini: menghasilkan berita yang **bermutu, relevan, dan bukan sekadar kumpulan link acak**.
+
+Versi ini tidak lagi menampilkan hasil tersimpan dari workflow dan worker tidak mengirim pesan otomatis.
 
 ## Fitur utama
 
@@ -32,7 +34,6 @@ Tujuan versi ini: menghasilkan berita yang **bermutu, relevan, dan bukan sekadar
   - relevansi terhadap kata kunci,
   - sinyal non-berita/clickbait.
 - Sosial/video **diblokir secara default**. Jika benar-benar ingin menerima konten sosial individual, aktifkan `NEWS_ALLOW_SOCIAL=1`, tetapi ini tidak disarankan untuk mode berita bermutu.
-- Telegram hanya mengirim artikel yang waktu publikasinya terverifikasi hari ini dan belum pernah dikirim.
 - Panel audit menampilkan sumber mentah RSS/Jina sebagai kode agar gambar, HTML, dan iklan tidak dimuat.
 
 ## Struktur proyek
@@ -44,7 +45,6 @@ Tujuan versi ini: menghasilkan berita yang **bermutu, relevan, dan bukan sekadar
 ├── app.py
 ├── news_service.py
 ├── storage.py
-├── telegram.py
 ├── worker.py
 └── requirements.txt
 ```
@@ -62,9 +62,6 @@ Ekspor environment variable:
 
 ```bash
 export JINA_API_KEY="jina_kunci_anda"
-export TELEGRAM_BOT_TOKEN="token_bot_anda"
-export TELEGRAM_CHAT_ID="chat_id_anda"
-
 # Default yang disarankan
 export NEWS_ENABLE_RSS="1"
 export NEWS_MAX_RSS_FEEDS="8"
@@ -84,31 +81,16 @@ Untuk dashboard lokal:
 streamlit run app.py
 ```
 
-## Deploy di GitHub dan Streamlit Community Cloud
+## Deploy di Streamlit Community Cloud
 
-1. Buat repository GitHub baru, lalu unggah isi proyek ini.
-2. Di GitHub, buka **Settings > Secrets and variables > Actions > New repository secret**.
-3. Tambahkan `JINA_API_KEY`, `TELEGRAM_BOT_TOKEN`, dan `TELEGRAM_CHAT_ID`.
-4. Opsional, tambahkan variables berikut untuk tuning:
-   - `NEWS_QUERY`
-   - `NEWS_ENABLE_RSS`
-   - `NEWS_MAX_RSS_FEEDS`
-   - `NEWS_RSS_TIMEOUT`
-   - `NEWS_MAX_SEARCH_ROUNDS`
-   - `NEWS_REQUEST_TIMEOUT`
-   - `JINA_PAGE_TIMEOUT`
-   - `JINA_RESPOND_WITH`
-   - `NEWS_ALLOW_SOCIAL`
-5. Jalankan workflow GitHub Actions secara manual satu kali untuk membuat data awal.
-6. Di Streamlit Community Cloud, buat aplikasi dari repo ini dengan file utama `app.py`.
-7. Pada **Settings > Secrets** Streamlit, masukkan minimal:
+1. Buat repository baru, lalu unggah isi proyek ini.
+2. Di Streamlit Community Cloud, buat aplikasi dari repo ini dengan file utama `app.py`.
+3. Pada **Settings > Secrets** Streamlit, masukkan minimal:
 
 ```toml
 JINA_API_KEY = "jina_kunci_anda"
 NEWS_ENABLE_RSS = "1"
 NEWS_ALLOW_SOCIAL = "0"
-# Opsional. Isi URL raw GitHub untuk data/latest_news.json.
-NEWS_DATA_URL = ""
 ```
 
 ## Konfigurasi performa
@@ -164,5 +146,4 @@ python -m unittest discover -s tests -v
 - RSS resmi bisa kosong atau lambat pada sebagian sumber; karena itu timeout dibuat pendek dan Jina hanya dipakai sebagai fallback.
 - Jina Search bukan mesin berita khusus. Tanpa `site:` dan negative filter, SERP dapat mengembalikan video, sosial, atau agregator. Versi ini sengaja mengunci fallback ke domain penerbit.
 - Tanggal relatif dihitung terhadap waktu Jakarta. Contoh: pukul `00:30`, artikel `2 jam yang lalu` dianggap berasal dari hari sebelumnya dan dikeluarkan.
-- Kandidat tanpa marker waktu tidak dikirim ke Telegram.
 - Putar ulang token yang pernah dibagikan di chat, commit, screenshot, atau file publik.

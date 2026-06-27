@@ -141,7 +141,7 @@ TRACKING_QUERY_KEYS = {
 # default. Tujuan aplikasi ini adalah tautan artikel penerbit, bukan video/postingan acak.
 BLOCKED_HOSTS = {
     "google.com", "news.google.com", "googleusercontent.com", "jina.ai", "s.jina.ai",
-    "bit.ly", "tinyurl.com",
+    "bit.ly", "tinyurl.com", "t.me", "telegram.me",
 }
 SOCIAL_SOURCE_LABELS = {
     "instagram.com": "Instagram",
@@ -155,15 +155,13 @@ SOCIAL_SOURCE_LABELS = {
     "threads.net": "Threads",
     "linkedin.com": "LinkedIn",
     "reddit.com": "Reddit",
-    "t.me": "Telegram",
-    "telegram.me": "Telegram",
     "pinterest.com": "Pinterest",
 }
 SOCIAL_HOSTS = frozenset(SOCIAL_SOURCE_LABELS)
 SOCIAL_NEGATIVE_QUERY = (
     "-site:youtube.com -site:youtu.be -site:instagram.com -site:tiktok.com "
     "-site:facebook.com -site:x.com -site:twitter.com -site:threads.net "
-    "-site:linkedin.com -site:reddit.com -site:news.google.com"
+    "-site:linkedin.com -site:reddit.com -site:t.me -site:telegram.me -site:news.google.com"
 )
 
 # Sumber tepercaya diberi bobot lebih tinggi, tetapi daftar ini bukan allow-list keras.
@@ -529,8 +527,6 @@ def _is_social_content_url(url: str) -> bool:
         return path.startswith("/posts/") or path.startswith("/feed/update/")
     if host.endswith("reddit.com"):
         return bool(re.match(r"^/r/[^/]+/comments/[^/]+", path))
-    if host.endswith(("t.me", "telegram.me")):
-        return len(segments) >= 2 and bool(re.fullmatch(r"\d+", segments[-1]))
     if host.endswith("pinterest.com"):
         return bool(re.match(r"^/pin/\d+", path))
     return False
@@ -1572,11 +1568,7 @@ def fetch_news(
     timeout: int | None = None,
     max_search_rounds: int | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
-    """Ambil berita terverifikasi dari RSS/Jina, atau kandidat audit bila waktu tidak tersedia.
-
-    Worker menyimpan kandidat fallback agar dashboard tidak kosong, tetapi worker harus
-    memfilter `time_status` sebelum mengirim notifikasi Telegram.
-    """
+    """Ambil berita terverifikasi dari RSS/Jina, atau kandidat audit bila waktu tidak tersedia."""
     articles, metadata, _ = _fetch_rounds(
         api_key,
         query,

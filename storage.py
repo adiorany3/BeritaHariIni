@@ -1,4 +1,4 @@
-"""Penyimpanan JSON sederhana yang cocok untuk GitHub Actions dan Streamlit."""
+"""Penyimpanan JSON sederhana untuk hasil pencarian dan dashboard Streamlit."""
 from __future__ import annotations
 
 import json

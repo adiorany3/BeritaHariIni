@@ -10,10 +10,8 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 from news_service import CATEGORY_ORDER, category_labels, default_query, fetch_news_with_raw
-from storage import read_json
 
 BASE_DIR = Path(__file__).resolve().parent
-LOCAL_DATA_FILE = BASE_DIR / "data" / "latest_news.json"
 
 st.set_page_config(page_title="Monitor Berita Hari Ini", page_icon="📰", layout="wide")
 st_autorefresh(interval=300_000, key="news_auto_refresh")
@@ -45,18 +43,6 @@ def apply_runtime_config_from_secrets() -> None:
 
 apply_runtime_config_from_secrets()
 
-
-def load_dashboard_data() -> dict[str, Any]:
-    """Baca data commit GitHub atau URL raw GitHub bila dikonfigurasi."""
-    data_url = get_secret("NEWS_DATA_URL")
-    if data_url:
-        try:
-            response = requests.get(data_url, timeout=20)
-            response.raise_for_status()
-            return response.json()
-        except (requests.RequestException, ValueError):
-            st.warning("Data remote belum dapat diambil. Menampilkan data lokal terakhir.")
-    return read_json(LOCAL_DATA_FILE, {"metadata": {}, "articles": []})
 
 
 def normalise_article(article: dict[str, Any]) -> dict[str, str]:
@@ -178,22 +164,16 @@ with st.sidebar:
     st.header("Status")
     st.write("Token Jina:", "✅ tersedia" if get_secret("JINA_API_KEY") else "⚠️ belum diatur")
     st.write("Pembaruan dashboard:", "otomatis setiap 5 menit")
-    st.write("Notifikasi Telegram:", "dikirim oleh GitHub Actions")
     st.write("RSS penerbit:", "✅ aktif" if os.getenv("NEWS_ENABLE_RSS", "1") not in {"0", "false", "False"} else "nonaktif")
     st.write("Mode Jina:", os.getenv("JINA_RESPOND_WITH", "no-content"))
     st.write("Maks. pencarian Jina/siklus:", os.getenv("NEWS_MAX_SEARCH_ROUNDS", "2"))
     st.divider()
     st.caption("Buka sumber asli untuk memeriksa isi, konteks, dan waktu publikasi artikel.")
 
-payload = load_dashboard_data()
-metadata = payload.get("metadata", {})
-stored_articles = payload.get("articles", [])
-
-metric_left, metric_middle, metric_right, metric_last = st.columns(4)
-metric_left.metric("Artikel hari ini", len(stored_articles))
-metric_middle.metric("Kategori", len({item.get("category", "Lainnya") for item in stored_articles}))
-metric_right.metric("Tanggal pencarian", metadata.get("today_jakarta", "Belum ada"))
-metric_last.metric("Pembaruan terakhir", metadata.get("fetched_at", "Belum ada"))
+metric_left, metric_middle, metric_right = st.columns(3)
+metric_left.metric("Mode", "Pencarian langsung")
+metric_middle.metric("RSS penerbit", "Aktif" if os.getenv("NEWS_ENABLE_RSS", "1") not in {"0", "false", "False"} else "Nonaktif")
+metric_right.metric("Maks. pencarian Jina", os.getenv("NEWS_MAX_SEARCH_ROUNDS", "2"))
 
 with st.expander("Cari berita langsung", expanded=True):
     st.caption(
@@ -257,19 +237,3 @@ with st.expander("Cari berita langsung", expanded=True):
     if raw_markdown:
         display_raw_response(raw_markdown, live_metadata)
 
-st.divider()
-st.subheader("Hasil terakhir dari GitHub Actions")
-if not stored_articles:
-    st.info("Belum ada data. Jalankan workflow GitHub Actions secara manual atau tunggu jadwal pertama.")
-else:
-    stored_options = [
-        label for label in category_labels()
-        if any(normalise_article(item)["category"] == label for item in stored_articles)
-    ]
-    selected_stored = st.multiselect(
-        "Kategori hasil tersimpan", options=stored_options, default=stored_options, key="stored_categories"
-    )
-    source_stored = st.text_input("Saring judul atau sumber hasil tersimpan", key="stored_source_filter")
-    filtered_stored = filter_articles(stored_articles, selected_stored, source_stored)
-    st.caption(f"Menampilkan {len(filtered_stored)} artikel yang sesuai filter.")
-    render_grouped_articles(filtered_stored, "Tidak ada artikel tersimpan yang sesuai filter.")
