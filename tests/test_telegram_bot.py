@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -47,10 +48,30 @@ class TelegramBotTests(unittest.TestCase):
         text = "\n".join(messages)
         self.assertIn("Harga Telur Ayam Naik", text)
         self.assertIn("Rp32.000", text)
-        self.assertIn("Buka teks saja", text)
+        self.assertIn("Buka teks Jina", text)
         self.assertIn("https://r.jina.ai/https://www.kompas.com/read/2026/06/27/harga-telur", text)
         self.assertIn("Buka berita asli", text)
         self.assertIn("https://www.kompas.com/read/2026/06/27/harga-telur", text)
+
+    def test_build_news_messages_uses_streamlit_text_reader_when_app_url_configured(self) -> None:
+        with patch.dict(os.environ, {"STREAMLIT_APP_URL": "https://berita-demo.streamlit.app"}, clear=False):
+            messages = build_news_messages(
+                "ai gambar",
+                [
+                    {
+                        "title": "Startup AI Gambar Rilis Fitur Baru",
+                        "scraped_info": "Perusahaan merilis fitur baru untuk membuat gambar dari teks.",
+                        "source": "contoh.id",
+                        "published_at": "2026-06-27T12:00:00",
+                        "url": "https://contoh.id/ai-gambar",
+                    }
+                ],
+                {"article_scrape_success": "1", "article_scrape_attempted": "1"},
+            )
+        text = "\n".join(messages)
+        self.assertIn("Buka teks bersih (TXT)", text)
+        self.assertIn("https://berita-demo.streamlit.app?reader=https%3A%2F%2Fcontoh.id%2Fai-gambar", text)
+        self.assertIn("Buka berita asli", text)
 
     def test_build_news_messages_uses_scraped_content_only_not_serp_summary(self) -> None:
         messages = build_news_messages(
@@ -70,7 +91,7 @@ class TelegramBotTests(unittest.TestCase):
         text = "\n".join(messages)
         self.assertNotIn("Deskripsi dari SERP", text)
         self.assertIn("Konten artikel belum berhasil di-scrape", text)
-        self.assertIn("Buka teks saja", text)
+        self.assertIn("Buka teks Jina", text)
         self.assertIn("Buka berita asli", text)
 
 

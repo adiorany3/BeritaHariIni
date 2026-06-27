@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import unittest
 import requests
@@ -13,7 +14,10 @@ from news_service import (
     fallback_queries,
     fetch_news,
     fetch_article_information,
+    fetch_article_text_document,
     build_jina_reader_url,
+    build_text_only_reader_url,
+    reader_payload_to_clean_txt,
     fetch_raw_markdown,
     source_scoped_query,
     parse_search_response,
@@ -338,6 +342,65 @@ Sementara itu harga beras relatif stabil di sejumlah pasar tradisional.
             "https://r.jina.ai/https://www.example.com/news/read?id=1",
         )
         self.assertEqual(build_jina_reader_url("not-a-url"), "")
+
+    def test_build_text_only_reader_url_prefers_streamlit_reader_when_configured(self) -> None:
+        self.assertEqual(
+            build_text_only_reader_url(
+                "https://www.example.com/news/read?id=1&utm_source=x#comments",
+                "https://berita-demo.streamlit.app/",
+            ),
+            "https://berita-demo.streamlit.app?reader=https%3A%2F%2Fwww.example.com%2Fnews%2Fread%3Fid%3D1",
+        )
+        self.assertEqual(
+            build_text_only_reader_url("https://www.example.com/news/read", ""),
+            "https://r.jina.ai/https://www.example.com/news/read",
+        )
+
+    def test_reader_payload_to_clean_txt_removes_image_markdown_and_boilerplate(self) -> None:
+        payload = json.dumps({
+            "data": {
+                "content": """Title: Potret Horor Venezuela Usai Gempa
+URL Source: https://www.cnbcindonesia.com/news/abc
+Markdown Content:
+![Image 1: Foto reruntuhan](https://asset.cnbcindonesia.com/foto.jpg)
+
+Pemerintah Venezuela melaporkan gempa dahsyat merusak sejumlah bangunan dan memicu evakuasi warga di beberapa kota.
+
+Baca Juga: Artikel rekomendasi lain
+
+Tim penyelamat masih menyisir lokasi terdampak untuk mencari korban dan memastikan akses bantuan darurat tetap terbuka.
+"""
+            }
+        })
+        text = reader_payload_to_clean_txt(
+            payload,
+            title="Potret Horor Venezuela Usai Gempa",
+            source_url="https://www.cnbcindonesia.com/news/abc",
+        )
+        self.assertIn("Pemerintah Venezuela", text)
+        self.assertIn("Tim penyelamat", text)
+        self.assertIn("Sumber asli: https://www.cnbcindonesia.com/news/abc", text)
+        self.assertNotIn("![Image", text)
+        self.assertNotIn("Markdown Content", text)
+        self.assertNotIn("Baca Juga", text)
+        self.assertNotIn("https://asset", text)
+
+    def test_fetch_article_text_document_uses_clean_txt_reader(self) -> None:
+        response = Mock()
+        response.text = '{"data":{"content":"![Image 1](https://foto.jpg)\n\nHarga telur ayam naik menjadi Rp32.000 per kilogram di pasar tradisional. Pedagang menyebut pasokan dari sentra produksi berkurang."}}'
+        response.raise_for_status = Mock()
+        with patch.dict(os.environ, {"NEWS_ARTICLE_SCRAPE_TIMEOUT": "8"}, clear=False):
+            with patch("news_service.requests.get", return_value=response) as mocked_get:
+                text, status = fetch_article_text_document(
+                    "token",
+                    "https://www.kompas.com/read/2026/06/27/harga-telur",
+                    title="Harga Telur Naik",
+                )
+        self.assertEqual(mocked_get.call_args.args[0], "https://r.jina.ai/https://www.kompas.com/read/2026/06/27/harga-telur")
+        self.assertEqual(mocked_get.call_args.kwargs["headers"]["X-Retain-Images"], "none")
+        self.assertEqual(status, "text_only_scraped_with_jina_reader")
+        self.assertIn("Harga Telur Naik", text)
+        self.assertNotIn("![Image", text)
 
     def test_fetch_article_information_uses_jina_reader_without_opening_source_site(self) -> None:
         response = Mock()

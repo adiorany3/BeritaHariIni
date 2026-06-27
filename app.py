@@ -4,24 +4,91 @@ import os
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 from config import apply_secrets_to_environment, get_secret, get_secret_bool, has_secret
-from news_service import CATEGORY_ORDER, build_jina_reader_url, category_labels, default_query, fetch_news_with_raw
+from news_service import CATEGORY_ORDER, build_text_only_reader_url, category_labels, default_query, fetch_article_text_document, fetch_news_with_raw
 
 BASE_DIR = Path(__file__).resolve().parent
 
 st.set_page_config(page_title="Monitor Berita Hari Ini", page_icon="📰", layout="wide")
-st_autorefresh(interval=300_000, key="news_auto_refresh")
 
 
 # Streamlit Community Cloud menyimpan secrets di panel Settings > Secrets.
 # Salin ke environment supaya news_service tetap dapat membaca konfigurasi lama.
 apply_secrets_to_environment()
 
+
+
+
+
+def get_query_param(name: str) -> str:
+    """Ambil query parameter Streamlit dengan kompatibilitas versi lama/baru."""
+    try:
+        value = st.query_params.get(name, "")
+    except Exception:
+        value = st.experimental_get_query_params().get(name, "")  # type: ignore[attr-defined]
+    if isinstance(value, list):
+        return str(value[0] if value else "").strip()
+    return str(value or "").strip()
+
+
+def render_text_only_reader_page(source_url: str) -> None:
+    """Halaman pembaca teks internal: ambil Jina Reader, bersihkan Markdown gambar, tampilkan TXT."""
+    st.title("🧹 Baca berita teks saja")
+    st.caption(
+        "Halaman ini mengambil artikel lewat Jina Reader dengan header pembersih, lalu membuang "
+        "Markdown gambar seperti `![Image ...]`, navigasi, iklan, dan elemen non-konten."
+    )
+    if not source_url.startswith(("http://", "https://")):
+        st.error("URL artikel tidak valid.")
+        return
+
+    col_original, col_back = st.columns(2)
+    with col_original:
+        st.link_button("Buka berita asli", source_url, use_container_width=True)
+    with col_back:
+        st.link_button("Kembali ke dashboard", "./", use_container_width=True)
+
+    try:
+        with st.spinner("Mengambil teks artikel bersih..."):
+            text, status = fetch_article_text_document(
+                get_secret("JINA_API_KEY", ""),
+                source_url,
+                timeout=int(os.getenv("NEWS_ARTICLE_SCRAPE_TIMEOUT", "12") or "12"),
+            )
+    except requests.RequestException as error:
+        st.error(f"Gagal mengambil teks dari Jina Reader: {error}")
+        st.info("Coba buka link asli, atau ulangi beberapa saat lagi jika API sedang membatasi request.")
+        return
+    except Exception as error:
+        st.error(f"Gagal menyiapkan teks berita: {error}")
+        return
+
+    st.success("Teks berita berhasil dibersihkan." if text else status)
+    if text:
+        st.text_area("Format TXT", text, height=620)
+        st.download_button(
+            "Unduh TXT",
+            data=text,
+            file_name="berita-teks-bersih.txt",
+            mime="text/plain; charset=utf-8",
+            use_container_width=True,
+        )
+    else:
+        st.warning(status or "Tidak ada teks artikel yang cukup informatif.")
+
+
+reader_source_url = get_query_param("reader")
+if reader_source_url:
+    render_text_only_reader_page(reader_source_url)
+    st.stop()
+
+st_autorefresh(interval=300_000, key="news_auto_refresh")
 
 
 def normalise_article(article: dict[str, Any]) -> dict[str, str]:
@@ -95,12 +162,11 @@ def render_article_card(article: dict[str, str]) -> None:
         if article.get("scrape_status") and not article.get("scraped_info"):
             st.caption(f"Info scrape: {article['scrape_status']}")
         original_url = article.get("url", "").strip()
-        jina_reader_url = build_jina_reader_url(original_url)
+        text_reader_url = f"?reader={quote(original_url, safe='')}" if original_url.startswith(("http://", "https://")) else ""
         if original_url.startswith(("http://", "https://")):
             link_left, link_right = st.columns([1, 1])
             with link_left:
-                if jina_reader_url:
-                    st.link_button("Buka teks saja (Jina)", jina_reader_url, use_container_width=True)
+                st.link_button("Buka teks bersih (TXT)", text_reader_url, use_container_width=True)
             with link_right:
                 st.link_button("Buka berita asli", original_url, use_container_width=True)
 
@@ -230,7 +296,7 @@ with st.sidebar:
     st.divider()
     render_telegram_controls()
     st.divider()
-    st.caption("Kartu berita menampilkan konten hasil scrape. Link teks Jina tersedia untuk membaca versi teks/minim iklan, dan link asli tetap tersedia sebagai sumber lengkap.")
+    st.caption("Kartu berita menampilkan konten hasil scrape. Link teks bersih membuka halaman TXT internal tanpa `![Image ...]`; link asli tetap tersedia sebagai sumber lengkap.")
 
 metric_left, metric_middle, metric_right, metric_extra = st.columns(4)
 metric_left.metric("Mode", "Pencarian langsung")

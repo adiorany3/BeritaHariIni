@@ -1,6 +1,6 @@
 # Monitor Berita Hari Ini dengan Streamlit
 
-Aplikasi ini mencari berita terbaru dengan pendekatan **RSS-first, Jina Search fallback, lalu scrape konten artikel**. RSS penerbit resmi dicek lebih dulu karena biasanya lebih cepat, lebih bersih, dan langsung berisi URL artikel. Jika hasil RSS belum cukup, aplikasi baru memakai Jina Search (`s.jina.ai/?q=`) dengan kueri sederhana per-domain media berita tepercaya. Sosial/video tetap diblokir di parser agar query tidak terlalu kompleks dan tidak memicu error 422 dari Jina. Setelah artikel akhir dipilih, aplikasi memakai Jina Reader (`r.jina.ai/<url>`) untuk mengambil konten utama dari isi artikel. Setiap kartu/pesan juga menyediakan link **Buka teks saja (Jina)** dengan format `https://r.jina.ai/https://www.example.com/artikel` agar klik membuka versi teks/minim iklan/menu, dan link **Buka berita asli** tetap ditampilkan agar pengguna bisa membaca sumber lengkap. Selain dashboard Streamlit, versi ini juga menyediakan **Telegram Bot interaktif** dan **worker broadcast pagi**: user bisa mengirim tema, atau GitHub Actions bisa mengirim digest berita terbaru setiap pagi ke chat Telegram.
+Aplikasi ini mencari berita terbaru dengan pendekatan **RSS-first, Jina Search fallback, lalu scrape konten artikel**. RSS penerbit resmi dicek lebih dulu karena biasanya lebih cepat, lebih bersih, dan langsung berisi URL artikel. Jika hasil RSS belum cukup, aplikasi baru memakai Jina Search (`s.jina.ai/?q=`) dengan kueri sederhana per-domain media berita tepercaya. Sosial/video tetap diblokir di parser agar query tidak terlalu kompleks dan tidak memicu error 422 dari Jina. Setelah artikel akhir dipilih, aplikasi memakai Jina Reader (`r.jina.ai/<url>`) untuk mengambil konten utama dari isi artikel. Setiap kartu/pesan juga menyediakan link **Buka teks bersih (TXT)**. Jika `STREAMLIT_APP_URL` diisi, link ini membuka halaman pembaca internal Streamlit (`?reader=<url>`) yang mengambil Jina Reader dengan header pembersih dan membuang baris seperti `![Image ...]`, navigasi, iklan, serta elemen non-konten. Link **Buka berita asli** tetap ditampilkan agar pengguna bisa membaca sumber lengkap. Selain dashboard Streamlit, versi ini juga menyediakan **Telegram Bot interaktif** dan **worker broadcast pagi**: user bisa mengirim tema, atau GitHub Actions bisa mengirim digest berita terbaru setiap pagi ke chat Telegram.
 
 Tujuan versi ini: menghasilkan berita yang **bermutu, relevan, informatif, dan bukan sekadar kumpulan link acak**.
 
@@ -9,7 +9,7 @@ Versi ini tidak lagi menampilkan hasil tersimpan dari workflow. Telegram menduku
 ## Fitur utama
 
 - **RSS penerbit resmi diprioritaskan** sebelum SERP umum, tetapi sekarang tetap mengikuti keyword search. Untuk keyword spesifik, RSS umum yang tidak cocok akan dibuang dan aplikasi lanjut ke Jina fallback.
-- **Konten artikel di-scrape otomatis** memakai Jina Reader setelah URL final lolos filter. Dashboard menampilkan konten hasil scrape langsung di kartu berita, menyediakan tombol **Buka teks saja (Jina)**, dan tetap menyediakan tombol **Buka berita asli**.
+- **Konten artikel di-scrape otomatis** memakai Jina Reader setelah URL final lolos filter. Dashboard menampilkan konten hasil scrape langsung di kartu berita, menyediakan tombol **Buka teks bersih (TXT)** yang menghapus `![Image ...]`, dan tetap menyediakan tombol **Buka berita asli**.
 - Query default tidak lagi menyebut platform sosial/video. Jina fallback memakai query `site:` **satu domain per request** ke media berita seperti Kompas, Detik, CNN Indonesia, CNBC Indonesia, Tempo, Antara, Liputan6, Bisnis, Katadata, Kontan, Republika, Kumparan, Tirto, Suara, dan Okezone. Query sengaja tidak memakai `OR`, tanda kurung, quote frasa, atau rangkaian `-site:` panjang agar tidak ditolak `s.jina.ai` dengan 422.
 - Respons Jina tetap memakai mode cepat:
   - `Accept: application/json`
@@ -37,8 +37,8 @@ Versi ini tidak lagi menampilkan hasil tersimpan dari workflow. Telegram menduku
 - Untuk query spesifik di kolom search, relevansi sekarang menjadi **filter wajib**, bukan sekadar bonus skor. Kueri multi-kata seperti `harga telur` diperlakukan sebagai **frasa/intent utuh**, bukan pencarian longgar `harga` OR `telur`. Ini mencegah hasil RSS umum atau hasil yang hanya cocok sebagian tampil statis ketika pengguna mencari topik tertentu.
 - Sosial/video **diblokir secara default**. Jika benar-benar ingin menerima konten sosial individual, aktifkan `NEWS_ALLOW_SOCIAL=1`, tetapi ini tidak disarankan untuk mode berita bermutu.
 - Panel audit menampilkan sumber mentah RSS/Jina sebagai kode agar gambar, HTML, dan iklan tidak dimuat.
-- Link asli tetap ditampilkan pada kartu sebagai tombol **Buka berita asli**, sedangkan tombol **Buka teks saja (Jina)** membuka `https://r.jina.ai/<url-asli>` untuk tampilan teks yang lebih bersih. Konten hasil scrape berfungsi sebagai preview sehingga pengguna tidak perlu membuka semua berita hanya untuk mengetahui isinya.
-- **Telegram Bot interaktif** tersedia lewat `telegram_bot.py`: kirim tema seperti `harga telur`, lalu bot membalas daftar judul, konten hasil scrape, link teks Jina, dan link berita asli.
+- Link asli tetap ditampilkan pada kartu sebagai tombol **Buka berita asli**, sedangkan tombol **Buka teks bersih (TXT)** membuka halaman TXT internal aplikasi bila `STREAMLIT_APP_URL` tersedia. Halaman ini membersihkan output Jina Reader dari `![Image ...]`, daftar link, navigasi, iklan, dan boilerplate agar mudah dibaca. Konten hasil scrape berfungsi sebagai preview sehingga pengguna tidak perlu membuka semua berita hanya untuk mengetahui isinya.
+- **Telegram Bot interaktif** tersedia lewat `telegram_bot.py`: kirim tema seperti `harga telur`, lalu bot membalas daftar judul, konten hasil scrape, link teks bersih TXT, dan link berita asli.
 - **Broadcast pagi Telegram** tersedia lewat `worker.py` dan workflow `.github/workflows/morning-news.yml`: GitHub Actions menjalankan worker setiap pagi dan mengirim digest ke chat Telegram yang Anda tentukan.
 
 ## Struktur proyek
@@ -136,7 +136,7 @@ Bot akan membalas:
 ```text
 Judul berita
 Konten hasil scrape
-Link teks Jina
+Link teks bersih TXT
 Link berita asli
 ```
 
@@ -171,13 +171,14 @@ Workflow `.github/workflows/morning-news.yml` menjalankan `python worker.py` set
 
 1. mengambil berita terbaru hari ini,
 2. membuat konten hasil scrape,
-3. mengirim judul + konten hasil scrape + link teks Jina + link asli ke Telegram.
+3. mengirim judul + konten hasil scrape + link teks bersih TXT + link asli ke Telegram.
 
 Secret GitHub yang wajib dibuat:
 
 | Secret | Isi |
 | --- | --- |
 | `JINA_API_KEY` | API key Jina Reader/Search. |
+| `STREAMLIT_APP_URL` | URL publik app Streamlit, contoh `https://nama-app.streamlit.app`. Dipakai supaya link Telegram membuka halaman TXT internal yang menghapus `![Image ...]`. |
 | `TELEGRAM_BOT_TOKEN` | Token bot dari @BotFather. |
 | `TELEGRAM_BROADCAST_CHAT_IDS` | Satu atau beberapa chat ID tujuan, contoh `123456789` atau `123456789,-100987654321`. |
 
@@ -206,15 +207,7 @@ Repository Variables opsional:
 | `WORKER_DEDUPE_TELEGRAM` | `1` | Cegah digest pagi yang sama terkirim berkali-kali di hari yang sama. |
 | `WORKER_FORCE_SEND` | `0` | Set `1` hanya kalau ingin mengirim ulang manual dari tab Actions. |
 
-Untuk mengubah jam, edit bagian workflow:
-
-```yaml
-schedule:
-  - cron: "15 7 * * *"
-    timezone: "Asia/Jakarta"
-```
-
-Jika akun/repo Anda belum mendukung `timezone`, ganti menjadi UTC manual. Contoh 07:15 WIB = 00:15 UTC:
+Untuk mengubah jam, edit bagian workflow. GitHub Actions memakai cron UTC, jadi contoh default 07:15 WIB ditulis sebagai 00:15 UTC:
 
 ```yaml
 schedule:
@@ -334,6 +327,7 @@ Worker eksternal tetap bisa memakai environment variable atau file lokal `.strea
 | `NEWS_ENABLE_ARTICLE_SCRAPE` | `1` | Ambil informasi utama dari isi artikel final memakai Jina Reader. |
 | `NEWS_MAX_ARTICLE_SCRAPES` | `5` | Jumlah artikel akhir yang di-scrape informasinya per pencarian. |
 | `NEWS_ARTICLE_SCRAPE_TIMEOUT` | `12` | Timeout per artikel untuk Jina Reader. |
+| `NEWS_TEXT_ONLY_MAX_CHARS` | `4000` | Batas karakter halaman TXT internal. |
 | `NEWS_ALLOW_SOCIAL` | `0` | Jika `1`, postingan sosial individual boleh lolos. Default `0` agar hasil tetap editorial. |
 | `TELEGRAM_BOT_TOKEN` | kosong | Token bot Telegram untuk mode interaktif. Wajib bila menjalankan `telegram_bot.py`. |
 | `TELEGRAM_NEWS_LIMIT` | `5` | Batas artikel yang dikirim bot Telegram per tema. |

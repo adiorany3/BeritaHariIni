@@ -1,7 +1,7 @@
 """Telegram bot interaktif untuk mencari berita berdasarkan tema yang dikirim user.
 
 User cukup mengirim tema seperti "harga telur" atau "/berita harga telur".
-Bot akan membalas judul, konten hasil scrape, link teks Jina, dan link asli artikel.
+Bot akan membalas judul, konten hasil scrape, link teks bersih TXT, dan link asli artikel.
 
 Bot ini memakai long polling agar mudah dijalankan di VPS/Render/Railway/GitHub Codespaces,
 tanpa perlu menyiapkan webhook publik.
@@ -21,7 +21,7 @@ from typing import Any
 import requests
 
 from config import apply_secrets_to_environment, get_secret, get_secret_bool, get_secret_int
-from news_service import build_jina_reader_url, fetch_news
+from news_service import build_jina_reader_url, build_text_only_reader_url, fetch_news
 from storage import read_json, write_json
 
 LOGGER = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ HELP_TEXT = """📰 <b>Bot Berita Hari Ini</b>
 Kirim tema berita, nanti bot akan mencari artikel hari ini dan membalas:
 • judul
 • konten hasil scrape artikel
-• link teks Jina dan link berita asli
+• link teks bersih TXT dan link berita asli
 
 Contoh:
 <code>harga telur</code>
@@ -112,16 +112,19 @@ def format_article(article: dict[str, Any], index: int) -> str:
     summary = _escape(
         _compact(
             scraped_info
-            or "Konten artikel belum berhasil di-scrape. Buka link teks Jina untuk membaca versi teks, atau buka link asli.",
+            or "Konten artikel belum berhasil di-scrape. Buka link teks bersih/TXT atau buka link asli.",
             650,
         )
     )
     source = _escape(article.get("source") or "sumber tidak diketahui")
     published_at = _escape(article.get("published_at") or "waktu tidak diketahui")
     url = str(article.get("url") or "").strip()
+    app_url = get_secret("STREAMLIT_APP_URL", "") or get_secret("PUBLIC_APP_URL", "")
+    text_reader_url = build_text_only_reader_url(url, app_url)
     jina_reader_url = build_jina_reader_url(url)
     safe_url = html.escape(url, quote=True)
-    safe_jina_url = html.escape(jina_reader_url, quote=True)
+    safe_text_url = html.escape(text_reader_url, quote=True)
+    has_internal_text_reader = bool(app_url and text_reader_url and text_reader_url != jina_reader_url)
 
     lines = [
         f"<b>{index}. {title}</b>",
@@ -129,8 +132,9 @@ def format_article(article: dict[str, Any], index: int) -> str:
         f"🏷️ {source} • {published_at}",
     ]
     if url.startswith(("http://", "https://")):
-        if jina_reader_url:
-            lines.append(f'🧹 <a href="{safe_jina_url}">Buka teks saja (Jina)</a>')
+        if text_reader_url:
+            label = "Buka teks bersih (TXT)" if has_internal_text_reader else "Buka teks Jina"
+            lines.append(f'🧹 <a href="{safe_text_url}">{label}</a>')
         lines.append(f'🔗 <a href="{safe_url}">Buka berita asli</a>')
     return "\n".join(lines)
 

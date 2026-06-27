@@ -15,7 +15,7 @@ import json
 import os
 import re
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 from xml.etree import ElementTree
 from zoneinfo import ZoneInfo
 
@@ -273,6 +273,19 @@ NON_ARTICLE_CONTEXT_RE = re.compile(
 )
 MIN_HEADLINE_LENGTH = 8
 
+READER_SKIP_LINE_RE = re.compile(
+    r"(?:^|\b)(?:ADVERTISEMENT|Advertorial|SCROLL TO CONTINUE|Baca Juga|Artikel Terkait|"
+    r"Rekomendasi|Terpopuler|Berita Terkini|Newsletter|Bagikan|Share|Follow|Ikuti Kami|"
+    r"Copyright|All Rights Reserved|CNBC Indonesia TV|Download aplikasi|Klik di sini)(?:\b|$)",
+    re.IGNORECASE,
+)
+READER_METADATA_LINE_RE = re.compile(
+    r"^\s*(?:Title|URL Source|Markdown Content|Published Time|Author|Reporter|Editor|Foto|Image):\s*",
+    re.IGNORECASE,
+)
+READER_IMAGE_LINE_RE = re.compile(r"^\s*!\[[^\n]*(?:\n|$)", re.IGNORECASE | re.MULTILINE)
+READER_IMAGE_INLINE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)", re.IGNORECASE)
+
 # Kata yang membuat kueri terlalu umum. Setelah kata-kata ini dibuang, sisa term
 # dipakai sebagai niat pencarian spesifik pengguna. Ini mencegah RSS umum
 # dianggap cocok hanya karena sama-sama berlabel "berita hari ini".
@@ -474,7 +487,8 @@ def _plain_markdown_text(value: Any, limit: int = 5_000) -> str:
         return ""
     text = re.sub(r"<script\b[^>]*>.*?</script>", " ", text, flags=re.IGNORECASE | re.DOTALL)
     text = re.sub(r"<style\b[^>]*>.*?</style>", " ", text, flags=re.IGNORECASE | re.DOTALL)
-    text = re.sub(r"!\[[^\]]*\]\([^)]*\)", " ", text)
+    text = READER_IMAGE_LINE_RE.sub("\n", text)
+    text = READER_IMAGE_INLINE_RE.sub(" ", text)
     # Jaga teks tautan, buang URL-nya agar kartu tidak berubah menjadi daftar link.
     def replace_markdown_link(match: re.Match[str]) -> str:
         label = match.group(1).strip()
@@ -612,6 +626,24 @@ def build_jina_reader_url(url: Any) -> str:
     if parsed.netloc.lower().removeprefix("www.") == "r.jina.ai":
         return clean_url
     return f"{JINA_READER_URL}{clean_url}"
+
+
+def build_text_only_reader_url(url: Any, app_base_url: Any = "") -> str:
+    """Bangun link pembaca teks aplikasi sendiri bila URL publik app tersedia.
+
+    Link `r.jina.ai` langsung di browser tidak bisa membawa header `X-Retain-Images: none`,
+    sehingga kadang masih menampilkan baris markdown seperti `![Image ...]`. Jika
+    `app_base_url` diisi, aplikasi Streamlit akan mengambil Reader via API, membersihkan
+    gambar/boilerplate, lalu menampilkan teks saja. Jika kosong, fallback ke link Jina.
+    """
+    clean_url = _valid_url(url)
+    if not clean_url:
+        return ""
+    base = str(app_base_url or "").strip().rstrip("/")
+    if base.startswith(("http://", "https://")):
+        separator = "&" if "?" in base else "?"
+        return f"{base}{separator}reader={quote(clean_url, safe='')}"
+    return build_jina_reader_url(clean_url)
 
 
 def _host(url: str) -> str:
@@ -1827,6 +1859,130 @@ def _reader_content_from_payload(payload: str) -> str:
         return ""
 
     return first_content(parsed)
+
+
+
+
+def clean_reader_content_for_txt(content: Any, *, title: str = "", source_url: str = "", limit: int = 4_000) -> str:
+    """Bersihkan markdown Jina Reader menjadi teks artikel yang mudah dibaca.
+
+    Fungsi ini khusus untuk halaman/link "teks saja": baris gambar `![Image ...]`,
+    tautan navigasi, metadata Reader, iklan, dan boilerplate dibuang. Berbeda dari
+    `_plain_markdown_text`, fungsi ini mempertahankan paragraf agar nyaman dibaca
+    sebagai TXT.
+    """
+    raw = str(content or "")
+    if not raw:
+        return ""
+    text = re.sub(r"<script\b[^>]*>.*?</script>", "\n", raw, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<style\b[^>]*>.*?</style>", "\n", text, flags=re.IGNORECASE | re.DOTALL)
+    text = READER_IMAGE_LINE_RE.sub("\n", text)
+    text = READER_IMAGE_INLINE_RE.sub(" ", text)
+
+    def replace_link(match: re.Match[str]) -> str:
+        label = _clean_text(match.group(1), 220)
+        if not label:
+            return " "
+        lower = label.casefold()
+        if any(part in lower for part in BLOCKED_TITLE_PARTS):
+            return " "
+        if READER_SKIP_LINE_RE.search(label):
+            return " "
+        return label
+
+    text = re.sub(r"\[([^\]\n]{1,240})\]\([^)]*\)", replace_link, text)
+    text = re.sub(r"https?://\S+", " ", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = unescape(text)
+
+    paragraphs: list[str] = []
+    seen: set[str] = set()
+    for line in text.splitlines():
+        line = line.strip(" \t-–—•·#>*_`|")
+        if not line:
+            continue
+        if READER_METADATA_LINE_RE.search(line):
+            continue
+        if READER_SKIP_LINE_RE.search(line):
+            continue
+        if SOCIAL_ENGAGEMENT_RE.search(line) or NON_ARTICLE_CONTEXT_RE.search(line):
+            continue
+        line = _clean_text(line, 900)
+        if len(line) < 35:
+            continue
+        lower = line.casefold()
+        if any(part in lower for part in BLOCKED_TITLE_PARTS):
+            continue
+        key = _normalise_search_text(line)
+        if key in seen:
+            continue
+        paragraphs.append(line)
+        seen.add(key)
+        if len("\n\n".join(paragraphs)) >= limit:
+            break
+
+    body = "\n\n".join(paragraphs).strip()
+    if len(body) > limit:
+        cut = max(body.rfind(". ", 0, limit), body.rfind("\n\n", 0, limit), body.rfind(", ", 0, limit))
+        body = body[: cut + 1].strip() if cut > 500 else body[:limit].rstrip() + "…"
+    heading = _clean_text(title, 220)
+    if heading and heading.casefold() not in body[:260].casefold():
+        body = f"{heading}\n\n{body}" if body else heading
+    clean_source = _valid_url(source_url)
+    if clean_source:
+        body = f"{body}\n\nSumber asli: {clean_source}" if body else f"Sumber asli: {clean_source}"
+    return body.strip()
+
+
+def reader_payload_to_clean_txt(payload: str, *, title: str = "", source_url: str = "", limit: int = 4_000) -> str:
+    """Ambil payload Jina Reader JSON/markdown dan hasilkan teks bersih siap tampil."""
+    content = _reader_content_from_payload(payload)
+    return clean_reader_content_for_txt(content, title=title, source_url=source_url, limit=limit)
+
+
+
+
+def fetch_article_text_document(
+    api_key: str,
+    url: Any,
+    *,
+    title: str = "",
+    timeout: int | None = None,
+    limit: int | None = None,
+) -> tuple[str, str]:
+    """Ambil artikel via Jina Reader dan kembalikan dokumen TXT bersih.
+
+    Dipakai oleh halaman `?reader=` Streamlit supaya link Telegram tidak membuka
+    `r.jina.ai` mentah yang kadang masih menyisakan `![Image ...]`.
+    """
+    clean_url = _valid_url(url)
+    if not clean_url:
+        return "", "URL artikel tidak valid"
+    request_timeout = configured_article_scrape_timeout(timeout or DEFAULT_ARTICLE_SCRAPE_TIMEOUT)
+    try:
+        max_chars = int(limit or os.getenv("NEWS_TEXT_ONLY_MAX_CHARS", "4000") or "4000")
+    except (TypeError, ValueError):
+        max_chars = 4_000
+    max_chars = max(1_000, min(max_chars, 12_000))
+    headers = {
+        "Accept": "application/json",
+        "X-Retain-Images": "none",
+        "X-Md-Link-Style": "discarded",
+        "X-Timeout": str(request_timeout),
+        "User-Agent": "news-monitor-streamlit/7.0-text-only-reader",
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    response = requests.get(
+        f"{JINA_READER_URL}{clean_url}",
+        headers=headers,
+        timeout=request_timeout + 3,
+    )
+    response.raise_for_status()
+    text = reader_payload_to_clean_txt(response.text, title=title, source_url=clean_url, limit=max_chars)
+    if not text:
+        return "", "Reader tidak menemukan teks artikel yang cukup informatif"
+    return text, "text_only_scraped_with_jina_reader"
 
 
 def fetch_article_information(

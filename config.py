@@ -15,6 +15,8 @@ BASE_DIR = Path(__file__).resolve().parent
 
 CONFIG_ENV_NAMES: tuple[str, ...] = (
     "JINA_API_KEY",
+    "STREAMLIT_APP_URL",
+    "PUBLIC_APP_URL",
     "JINA_PAGE_TIMEOUT",
     "JINA_RESPOND_WITH",
     "NEWS_QUERY",
@@ -28,6 +30,7 @@ CONFIG_ENV_NAMES: tuple[str, ...] = (
     "NEWS_ENABLE_ARTICLE_SCRAPE",
     "NEWS_ARTICLE_SCRAPE_TIMEOUT",
     "NEWS_MAX_ARTICLE_SCRAPES",
+    "NEWS_TEXT_ONLY_MAX_CHARS",
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_ALLOWED_CHAT_IDS",
     "TELEGRAM_BROADCAST_CHAT_IDS",
@@ -51,6 +54,8 @@ CONFIG_ENV_NAMES: tuple[str, ...] = (
 
 SPECIAL_SECTION_ALIASES: dict[str, tuple[tuple[str, str], ...]] = {
     "JINA_API_KEY": (("jina", "api_key"), ("jina", "key")),
+    "STREAMLIT_APP_URL": (("app", "url"), ("streamlit", "app_url"), ("streamlit", "url")),
+    "PUBLIC_APP_URL": (("app", "public_url"), ("app", "url"), ("streamlit", "app_url")),
     "JINA_PAGE_TIMEOUT": (("jina", "page_timeout"),),
     "JINA_RESPOND_WITH": (("jina", "respond_with"),),
     "TELEGRAM_BOT_TOKEN": (("telegram", "bot_token"), ("telegram", "token")),
