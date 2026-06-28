@@ -21,6 +21,7 @@ from news_service import (
     fetch_raw_markdown,
     jina_api_key_count,
     jina_api_keys_from,
+    query_context_evaluation,
     source_scoped_query,
     parse_search_response,
     parse_search_response_details,
@@ -481,6 +482,60 @@ Artikel membahas peluncuran mobil listrik baru dan rencana produksi kendaraan ra
         self.assertEqual([item["title"] for item in articles], [
             "Produsen Rilis Mobil Listrik Baru untuk Pasar Indonesia"
         ])
+
+
+    def test_short_token_ai_must_match_whole_word_not_substring(self) -> None:
+        item = {
+            "title": "Pemerintah Mulai Terapkan Aturan Gambar Produk di Marketplace",
+            "url": "https://www.kompas.com/read/2026/06/27/120000/aturan-gambar-produk-marketplace",
+            "summary": "Artikel ini membahas gambar produk, tetapi tidak membahas kecerdasan buatan.",
+            "time_status": "verified_today",
+            "category_key": "teknologi",
+            "category": "Teknologi",
+        }
+        evaluation = query_context_evaluation(item, "AI gambar")
+        self.assertLess(evaluation["score"], 70)
+        self.assertNotIn("ai", evaluation["matched_tokens"])
+
+    def test_context_filter_rejects_all_terms_without_strong_title_or_slug_subject(self) -> None:
+        rss_items = [
+            {
+                "id": "weak-context",
+                "title": "Pemerintah Bahas Program Digital Baru untuk Sekolah",
+                "url": "https://www.kompas.com/read/2026/06/27/120000/program-digital-sekolah",
+                "source": "kompas.com",
+                "source_type": "publisher",
+                "summary": "Dalam artikel teknologi ini disebutkan AI dan gambar hanya sebagai contoh fitur lain.",
+                "published_at": "2026-06-27T12:00:00",
+                "time_status": "verified_today",
+                "category_key": "teknologi",
+                "category": "Teknologi",
+            },
+            {
+                "id": "strong-context",
+                "title": "Startup Rilis AI Gambar Baru untuk Kreator Indonesia",
+                "url": "https://tekno.kompas.com/read/2026/06/27/120000/startup-rilis-ai-gambar-baru",
+                "source": "tekno.kompas.com",
+                "source_type": "publisher",
+                "summary": "Platform AI gambar ini membantu kreator membuat ilustrasi dari prompt teks.",
+                "published_at": "2026-06-27T12:00:00",
+                "time_status": "verified_today",
+                "category_key": "teknologi",
+                "category": "Teknologi",
+            },
+        ]
+        with patch.dict(os.environ, {"NEWS_MAX_SEARCH_ROUNDS": "0", "NEWS_ENABLE_RSS": "1", "NEWS_ENABLE_ARTICLE_SCRAPE": "0"}, clear=False):
+            with patch("news_service.jakarta_now", return_value=datetime(2026, 6, 27, 14, 0)):
+                with patch("news_service.fetch_rss_articles", return_value=(rss_items, {
+                    "rss_enabled": "true",
+                    "rss_articles": "2",
+                    "rss_feeds_checked": "1",
+                }, "RSS test")):
+                    articles, metadata = fetch_news("token", query="AI gambar", max_results=20)
+        self.assertEqual([item["title"] for item in articles], [
+            "Startup Rilis AI Gambar Baru untuk Kreator Indonesia"
+        ])
+        self.assertEqual(metadata["context_min_score"], "70")
 
     def test_fetch_raw_markdown_uses_fast_jina_headers(self) -> None:
         response = Mock()

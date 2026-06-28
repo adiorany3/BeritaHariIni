@@ -480,6 +480,24 @@ Setiap artikel diperkaya dengan skor/status validitas:
 
 Telegram dan dashboard menampilkan skor validitas, alasan validitas, dan jumlah sumber terkait bila ada.
 
+
+### Context match ketat
+
+Untuk mengurangi berita yang tampak cocok tetapi sebenarnya keluar konteks, setiap artikel juga diberi skor konteks. Query spesifik seperti `AI gambar`, `harga telur`, atau `mobil listrik` dinilai dari judul, slug URL, ringkasan, dan konten hasil scrape.
+
+Perbaikan penting:
+
+- Token pendek seperti `AI` harus cocok sebagai kata utuh, bukan potongan dari kata seperti `mulai`, `terkait`, atau `selain`.
+- Query multi-kata tidak diperlakukan sebagai OR. Artikel harus membawa frasa atau semua term dengan bukti kuat di judul/slug/konten.
+- Artikel dengan semua term yang hanya tersebar lemah di snippet ditahan agar tidak masuk Telegram.
+- Dashboard menampilkan `Konteks x/100` dan alasan konteks agar mudah diaudit.
+
+Ambang default:
+
+```bash
+MIN_CONTEXT_MATCH_SCORE = 70
+```
+
 ### Structured extraction
 
 Konten hasil scrape sekarang dianalisis ringan untuk mengambil fakta penting sesuai topik. Contoh:

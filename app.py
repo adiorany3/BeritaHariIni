@@ -136,6 +136,10 @@ def normalise_article(article: dict[str, Any]) -> dict[str, Any]:
     value.setdefault("time_note", "")
     value.setdefault("quality_score", "0")
     value.setdefault("quality_reasons", [])
+    value.setdefault("context_score", 0)
+    value.setdefault("context_level", "")
+    value.setdefault("context_reasons", [])
+    value.setdefault("context_matched_tokens", [])
     value.setdefault("validity_score", 0)
     value.setdefault("validity_status", "")
     value.setdefault("validity_reasons", [])
@@ -182,6 +186,8 @@ def render_article_card(article: dict[str, Any]) -> None:
                 source_line += f"  •  Skor kualitas {article['quality_score']}"
             if article.get("validity_score"):
                 source_line += f"  •  Validitas {article.get('validity_score')}/100"
+            if article.get("context_score"):
+                source_line += f"  •  Konteks {article.get('context_score')}/100"
             st.caption(source_line)
         with top_right:
             if article.get("time_status") == "needs_time_verification":
@@ -205,6 +211,9 @@ def render_article_card(article: dict[str, Any]) -> None:
         reasons = format_reason_text(article.get("quality_reasons"))
         if reasons:
             st.caption(f"Alasan lolos: {reasons}")
+        context_reasons = format_reason_text(article.get("context_reasons"))
+        if context_reasons:
+            st.caption(f"Alasan konteks: {context_reasons}")
         validity_reasons = format_reason_text(article.get("validity_reasons"))
         if validity_reasons:
             st.caption(f"Alasan validitas: {validity_reasons}")

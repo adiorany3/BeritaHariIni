@@ -249,6 +249,17 @@ ARTICLE_CACHE_PATH = BASE_DIR / "data" / "article_cache.json"
 _ARTICLE_CACHE_LOCK = RLock()
 MIN_VERIFIED_QUALITY_SCORE = 58
 MIN_UNVERIFIED_QUALITY_SCORE = 72
+# Ambang minimal agar artikel dianggap benar-benar sesuai konteks search.
+# Query spesifik seperti "AI gambar" atau "harga telur" tidak boleh lolos hanya
+# karena satu kata muncul sebagai potongan kata lain atau berada di kategori umum.
+MIN_CONTEXT_MATCH_SCORE = 70
+
+# Kata intent yang biasanya hanya modifier. Untuk query multi-kata, minimal subjek
+# non-modifier harus kuat muncul di judul/slug/ringkasan agar konteks tidak melebar.
+INTENT_MODIFIER_TERMS = {
+    "harga", "tarif", "biaya", "ongkos", "jadwal", "hasil", "skor",
+    "cara", "tips", "link", "cek", "daftar", "update", "terbaru", "terkini",
+}
 
 # Navigasi dan profil tetap tidak dianggap artikel. Kata seperti watch, reels, dan shorts
 # sengaja tidak diblokir secara global karena dapat merupakan URL konten sosial individual.
@@ -695,9 +706,9 @@ def extract_article_information(content: str, *, title: str = "", query: str = "
         if phrase and phrase in normalised:
             value += 40
         if query_tokens:
-            value += 12 * sum(token in words or token in normalised for token in query_tokens)
+            value += 12 * sum(_token_matches_normalised(token, normalised, words) for token in query_tokens)
         if title_tokens:
-            value += 4 * sum(token in words or token in normalised for token in title_tokens[:8])
+            value += 4 * sum(_token_matches_normalised(token, normalised, words) for token in title_tokens[:8])
         if re.search(r"(?:\brp\s*\d[\d.,]*\b|\b\d+(?:[.,]\d+)?\s*(?:%|persen|rupiah|ribu|juta|miliar|triliun|kg|ton)\b)", sentence, re.IGNORECASE):
             value += 10
         if NEWS_VERB_RE.search(sentence):
@@ -1607,6 +1618,31 @@ def _query_is_specific(query: str) -> bool:
     return bool(_specific_query_terms(query))
 
 
+def _token_matches_normalised(token: str, normalised_text: str, words: set[str]) -> bool:
+    """Cocokkan token query tanpa false-positive substring.
+
+    Token pendek seperti "AI" harus cocok sebagai kata utuh. Kalau tidak, kata
+    seperti "mulai", "terkait", atau "selain" bisa membuat artikel terlihat relevan
+    padahal tidak membahas AI sama sekali. Untuk token panjang, substring masih
+    boleh karena bentuk slug/imbuhan Indonesia sering menempel pada kata.
+    """
+    token = token.casefold().strip()
+    if not token:
+        return False
+    if len(token) <= 3:
+        return token in words
+    return token in words or token in normalised_text
+
+
+def _matched_query_tokens(text: str, query: str) -> list[str]:
+    tokens = _specific_query_token_list(query)
+    if not tokens:
+        return []
+    normalised_text = _normalise_search_text(text)
+    words = set(normalised_text.split())
+    return [token for token in tokens if _token_matches_normalised(token, normalised_text, words)]
+
+
 def _query_match_level(text: str, query: str) -> str:
     """Kembalikan level kecocokan intent: exact_phrase, all_terms, partial, none."""
     tokens = _specific_query_token_list(query)
@@ -1622,7 +1658,7 @@ def _query_match_level(text: str, query: str) -> str:
         return "exact_phrase"
 
     words = set(normalised_text.split())
-    matched = [token for token in tokens if token in words or token in normalised_text]
+    matched = [token for token in tokens if _token_matches_normalised(token, normalised_text, words)]
     if len(matched) == len(tokens):
         return "all_terms"
     if matched:
@@ -1630,20 +1666,116 @@ def _query_match_level(text: str, query: str) -> str:
     return "none"
 
 
-def _matches_query_intent(item: dict[str, Any], query: str) -> bool:
-    """True bila artikel sesuai niat search; kueri umum tidak difilter ketat.
+def _url_slug_text(url: str) -> str:
+    parsed = urlparse(str(url or ""))
+    parts = [part for part in parsed.path.split("/") if part]
+    if not parts:
+        return ""
+    # Gabungkan seluruh path, bukan hanya slug terakhir, karena banyak media menaruh
+    # kanal/topik di segmen sebelumnya seperti /tekno/ai-gambar/....
+    return " ".join(re.split(r"[-_]+", " ".join(parts)))
 
-    Untuk kueri multi-kata, semua term harus cocok, dan frasa utuh diberi prioritas.
-    Contoh: "harga telur" tidak boleh lolos hanya karena judul berisi "harga" saja
-    atau "telur" saja.
+
+def _subject_query_tokens(query: str) -> list[str]:
+    tokens = _specific_query_token_list(query)
+    subject = [token for token in tokens if token not in INTENT_MODIFIER_TERMS]
+    return subject or tokens
+
+
+def query_context_evaluation(item: dict[str, Any], query: str) -> dict[str, Any]:
+    """Nilai apakah artikel benar-benar sejalan dengan konteks search pengguna.
+
+    Ini sengaja lebih ketat dari quality score umum. Kategori, nama media, dan kata
+    generik tidak dipakai sebagai bukti konteks. Bukti utama berasal dari judul, slug
+    URL, ringkasan, dan konten hasil scrape.
     """
+    tokens = _specific_query_token_list(query)
+    if not tokens:
+        return {"score": 100, "level": "general", "reasons": ["query umum"], "matched_tokens": []}
+
+    title = str(item.get("title") or "")
+    summary = str(item.get("summary") or "")
+    scraped = str(item.get("scraped_info") or "")
+    slug = _url_slug_text(str(item.get("url") or ""))
+
+    title_slug = _normalise_search_text(f"{title} {slug}")
+    summary_text = _normalise_search_text(summary)
+    scraped_text = _normalise_search_text(scraped)
+    combined = _normalise_search_text(" ".join(part for part in (title_slug, summary_text, scraped_text) if part))
+    combined_words = set(combined.split())
+    phrase = _specific_query_phrase(query)
+    subject_tokens = _subject_query_tokens(query)
+
+    matched = [token for token in tokens if _token_matches_normalised(token, combined, combined_words)]
+    title_slug_words = set(title_slug.split())
+    subject_in_title_slug = any(
+        _token_matches_normalised(token, title_slug, title_slug_words)
+        for token in subject_tokens
+    )
+
+    reasons: list[str] = []
+    score = 0
+    level = "none"
+
+    if phrase and phrase in title_slug:
+        score = 100
+        level = "exact_phrase_title"
+        reasons.append("frasa search muncul di judul/slug")
+    elif phrase and (phrase in summary_text or phrase in scraped_text):
+        score = 90
+        level = "exact_phrase_content"
+        reasons.append("frasa search muncul di ringkasan/konten")
+    elif len(matched) == len(tokens):
+        title_slug_matched = [token for token in tokens if _token_matches_normalised(token, title_slug, title_slug_words)]
+        if len(title_slug_matched) == len(tokens):
+            score = 86
+            level = "all_terms_title"
+            reasons.append("semua term search muncul di judul/slug")
+        elif subject_in_title_slug:
+            score = 78
+            level = "all_terms_subject_title"
+            reasons.append("semua term search cocok dan subjek muncul di judul/slug")
+        else:
+            # Semua term hanya tersebar di ringkasan/konten. Ini bisa benar, tetapi
+            # sering menjadi sumber mismatch, jadi default-nya ditahan di bawah ambang.
+            score = 66
+            level = "all_terms_weak"
+            reasons.append("semua term cocok tetapi bukti judul/slug lemah")
+    elif matched:
+        ratio = len(matched) / max(1, len(tokens))
+        score = int(25 + ratio * 30)
+        level = "partial"
+        reasons.append("hanya sebagian term search cocok")
+    else:
+        score = 0
+        level = "none"
+        reasons.append("tidak ada term search yang cocok")
+
+    # Untuk query satu kata yang spesifik, cocok di ringkasan/konten masih layak.
+    if len(tokens) == 1 and matched:
+        token = tokens[0]
+        if _token_matches_normalised(token, title_slug, title_slug_words):
+            score = max(score, 85)
+            level = "single_term_title"
+            reasons = ["term search muncul di judul/slug"]
+        else:
+            score = max(score, 70)
+            level = "single_term_content"
+            reasons = ["term search muncul di ringkasan/konten"]
+
+    return {
+        "score": max(0, min(score, 100)),
+        "level": level,
+        "reasons": reasons[:4],
+        "matched_tokens": matched,
+    }
+
+
+def _matches_query_intent(item: dict[str, Any], query: str) -> bool:
+    """True bila artikel sesuai niat search; kueri umum tidak difilter ketat."""
     if not _query_is_specific(query):
         return True
-    combined = " ".join(
-        str(item.get(key, ""))
-        for key in ("title", "summary", "url", "source", "category", "category_key")
-    )
-    return _query_match_level(combined, query) in {"exact_phrase", "all_terms"}
+    return int(query_context_evaluation(item, query).get("score") or 0) >= MIN_CONTEXT_MATCH_SCORE
 
 
 def _path_article_score(url: str) -> tuple[int, list[str]]:
@@ -1785,8 +1917,13 @@ def _apply_quality_scores(items: list[dict[str, Any]], query: str) -> list[dict[
             query=query,
         )
         enriched = dict(item)
+        context_eval = query_context_evaluation(enriched, query)
         enriched["quality_score"] = quality_score
         enriched["quality_reasons"] = quality_reasons
+        enriched["context_score"] = context_eval.get("score", 0)
+        enriched["context_level"] = context_eval.get("level", "")
+        enriched["context_reasons"] = context_eval.get("reasons", [])
+        enriched["context_matched_tokens"] = context_eval.get("matched_tokens", [])
         scored.append(enriched)
     return scored
 
@@ -1797,7 +1934,7 @@ def _rank_and_filter(items: list[dict[str, Any]], query: str, limit: int) -> lis
     strict_relevance = _query_is_specific(query)
     filtered = []
     for item in scored:
-        if strict_relevance and not _matches_query_intent(item, query):
+        if strict_relevance and int(item.get("context_score") or 0) < MIN_CONTEXT_MATCH_SCORE:
             continue
         if (
             item.get("time_status") == "verified_today"
@@ -1810,6 +1947,7 @@ def _rank_and_filter(items: list[dict[str, Any]], query: str, limit: int) -> lis
     filtered.sort(
         key=lambda item: (
             item.get("time_status") == "verified_today",
+            int(item.get("context_score", 0)),
             int(item.get("quality_score", 0)),
             item.get("source_type") == "publisher",
         ),
@@ -2653,6 +2791,10 @@ def _fetch_rounds(
         query=primary_query,
         timeout=timeout,
     )
+    # Re-evaluasi setelah scrape karena ringkasan kini berasal dari isi artikel. Ini
+    # menahan artikel yang awalnya tampak cocok dari snippet SERP/RSS tetapi isi
+    # bersihnya ternyata tidak sejalan dengan konteks search.
+    articles = _rank_and_filter(articles, primary_query, max_results)
     articles = enrich_validity_and_structure(articles, query=primary_query, limit=max_results)
 
     raw_candidates = sum(stats["raw_candidates"] for _, stats, _ in parsed_rounds)
@@ -2672,6 +2814,8 @@ def _fetch_rounds(
             "strict_query_relevance": "true" if _query_is_specific(primary_query) else "false",
             "query_terms": ", ".join(_specific_query_token_list(primary_query)),
             "query_phrase": _specific_query_phrase(primary_query),
+            "context_min_score": str(MIN_CONTEXT_MATCH_SCORE),
+            "context_filtered_articles": str(sum(1 for item in articles if int(item.get("context_score") or 0) >= MIN_CONTEXT_MATCH_SCORE)) if _query_is_specific(primary_query) else "0",
             "article_cache_enabled": str(configured_enable_article_cache()).lower(),
             "validity_mode": "enabled",
             "strong_validity_articles": str(sum(str(item.get("validity_status", "")).startswith("✅") for item in articles)),
