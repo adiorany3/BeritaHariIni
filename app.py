@@ -91,7 +91,7 @@ if reader_source_url:
 st_autorefresh(interval=300_000, key="news_auto_refresh")
 
 
-def normalise_article(article: dict[str, Any]) -> dict[str, str]:
+def normalise_article(article: dict[str, Any]) -> dict[str, Any]:
     """Beri nilai aman untuk data lama sebelum versi kategori tersedia."""
     value = dict(article)
     value.setdefault("category_key", "lainnya")
@@ -108,15 +108,15 @@ def normalise_article(article: dict[str, Any]) -> dict[str, str]:
     value.setdefault("source", "Sumber tidak diketahui")
     value.setdefault("url", "")
     value.setdefault("title", "Tanpa judul")
-    return {key: str(item) for key, item in value.items()}
+    return value
 
 
 def filter_articles(
     articles: list[dict[str, Any]], selected_categories: list[str], source_query: str
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     selected = set(selected_categories)
     source_query = source_query.strip().lower()
-    filtered: list[dict[str, str]] = []
+    filtered: list[dict[str, Any]] = []
     for raw in articles:
         article = normalise_article(raw)
         if selected and article["category"] not in selected:
@@ -128,7 +128,7 @@ def filter_articles(
     return filtered
 
 
-def render_article_card(article: dict[str, str]) -> None:
+def render_article_card(article: dict[str, Any]) -> None:
     """Kartu teks murni. Tidak pernah memuat atau merender gambar dari sumber."""
     with st.container(border=True):
         top_left, top_right = st.columns([4, 1])
@@ -140,6 +140,8 @@ def render_article_card(article: dict[str, str]) -> None:
                 source_line += "  •  Kandidat artikel"
             if article.get("quality_score") and article.get("quality_score") != "0":
                 source_line += f"  •  Skor kualitas {article['quality_score']}"
+            if article.get("validity_score"):
+                source_line += f"  •  Validitas {article.get('validity_score')}/100"
             st.caption(source_line)
         with top_right:
             if article.get("time_status") == "needs_time_verification":
@@ -147,6 +149,13 @@ def render_article_card(article: dict[str, str]) -> None:
             else:
                 st.caption(f"🕒 {article['published_at']}")
         st.markdown(f"**{article['title']}**")
+        if article.get("validity_status"):
+            st.caption(f"{article.get('validity_status')}  •  {article.get('supporting_source_count', 1)} sumber terkait")
+        structured = article.get("structured_info")
+        if isinstance(structured, dict) and structured.get("highlights"):
+            st.markdown(f"**Fakta terstruktur — {structured.get('label', 'Umum')}:**")
+            for highlight in structured.get("highlights", [])[:5]:
+                st.write(f"• {highlight}")
         info = article.get("scraped_info") or article.get("summary", "")
         if info:
             st.markdown("**Konten berita (hasil scrape):**")
@@ -157,6 +166,12 @@ def render_article_card(article: dict[str, str]) -> None:
             reasons = str(article.get("quality_reasons", "")).strip("[]").replace("'", "")
             if reasons:
                 st.caption(f"Alasan lolos: {reasons}")
+        if article.get("validity_reasons") not in {"", "[]", None}:
+            validity_reasons = ", ".join(article.get("validity_reasons", [])) if isinstance(article.get("validity_reasons"), list) else str(article.get("validity_reasons"))
+            if validity_reasons:
+                st.caption(f"Alasan validitas: {validity_reasons}")
+        if isinstance(article.get("supporting_sources"), list) and len(article.get("supporting_sources", [])) > 1:
+            st.caption("Sumber terkait: " + ", ".join(article.get("supporting_sources", [])[:5]))
         if article.get("time_status") == "needs_time_verification":
             st.caption("Waktu publikasi belum ada pada respons pencarian. Periksa waktu di sumber asli.")
         if article.get("scrape_status") and not article.get("scraped_info"):
@@ -171,12 +186,12 @@ def render_article_card(article: dict[str, str]) -> None:
                 st.link_button("Buka berita asli", original_url, use_container_width=True)
 
 
-def render_grouped_articles(articles: list[dict[str, str]], empty_message: str) -> None:
+def render_grouped_articles(articles: list[dict[str, Any]], empty_message: str) -> None:
     if not articles:
         st.info(empty_message)
         return
 
-    groups: dict[str, list[dict[str, str]]] = defaultdict(list)
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for article in articles:
         groups[article["category"]].append(article)
 

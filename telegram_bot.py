@@ -36,7 +36,9 @@ DEFAULT_POLL_TIMEOUT = 30
 DEFAULT_TEXT_READER_APP_URL = "https://beritaterbaru.streamlit.app"
 BASE_DIR = Path(__file__).resolve().parent
 TELEGRAM_UPDATE_STATE_PATH = BASE_DIR / "data" / "telegram_updates_state.json"
+TELEGRAM_SUBSCRIPTIONS_PATH = BASE_DIR / "data" / "telegram_subscriptions.json"
 MAX_STORED_TELEGRAM_UPDATES = 600
+MAX_TOPICS_PER_CHAT = 12
 
 
 HELP_TEXT = """📰 <b>Bot Berita Hari Ini</b>
@@ -54,6 +56,13 @@ Contoh:
 Perintah:
 /start - mulai
 /help - bantuan
+/cari <tema> - cari berita sekarang
+/pagi - kirim berita dari topik langganan sekarang
+/topik <tema> - simpan topik langganan harian
+/topikku - lihat topik langganan
+/hapus <tema> - hapus topik, atau /hapus semua
+/limit <1-10> - atur jumlah berita per topik
+/status - cek status bot dan konfigurasi
 """.strip()
 
 
@@ -143,6 +152,113 @@ def _telegram_text_reader_app_url() -> str:
     return ""
 
 
+
+
+def _normalise_topic(value: str) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    return text[:120]
+
+
+def _load_subscription_state(path: str | Path | None = None) -> dict[str, Any]:
+    path = path or TELEGRAM_SUBSCRIPTIONS_PATH
+    payload = read_json(path, {"chats": {}})
+    if not isinstance(payload, dict):
+        return {"chats": {}}
+    chats = payload.get("chats")
+    if not isinstance(chats, dict):
+        chats = {}
+    normalised: dict[str, Any] = {"chats": {}}
+    for chat_id, value in chats.items():
+        if not isinstance(value, dict):
+            continue
+        topics = [_normalise_topic(topic) for topic in value.get("topics", []) if _normalise_topic(topic)]
+        limit = value.get("limit", DEFAULT_NEWS_LIMIT)
+        try:
+            limit = max(1, min(int(limit), 10))
+        except (TypeError, ValueError):
+            limit = DEFAULT_NEWS_LIMIT
+        normalised["chats"][str(chat_id)] = {
+            "topics": topics[:MAX_TOPICS_PER_CHAT],
+            "limit": limit,
+            "updated_at": value.get("updated_at", ""),
+        }
+    return normalised
+
+
+def _save_subscription_state(state: dict[str, Any], path: str | Path | None = None) -> None:
+    write_json(path or TELEGRAM_SUBSCRIPTIONS_PATH, state)
+
+
+def get_chat_subscription(chat_id: int, *, path: str | Path | None = None) -> dict[str, Any]:
+    state = _load_subscription_state(path)
+    value = state.get("chats", {}).get(str(chat_id), {})
+    if not isinstance(value, dict):
+        return {"topics": [], "limit": DEFAULT_NEWS_LIMIT}
+    return {"topics": list(value.get("topics", [])), "limit": int(value.get("limit", DEFAULT_NEWS_LIMIT) or DEFAULT_NEWS_LIMIT)}
+
+
+def list_subscription_targets(*, path: str | Path | None = None) -> dict[int, dict[str, Any]]:
+    """Return chat_id -> {topics, limit} untuk worker pagi GitHub Actions."""
+    state = _load_subscription_state(path)
+    result: dict[int, dict[str, Any]] = {}
+    for raw_chat_id, value in state.get("chats", {}).items():
+        try:
+            chat_id = int(raw_chat_id)
+        except (TypeError, ValueError):
+            continue
+        topics = [topic for topic in value.get("topics", []) if topic]
+        if not topics:
+            continue
+        result[chat_id] = {"topics": topics[:MAX_TOPICS_PER_CHAT], "limit": int(value.get("limit", DEFAULT_NEWS_LIMIT) or DEFAULT_NEWS_LIMIT)}
+    return result
+
+
+def add_subscription_topic(chat_id: int, topic: str, *, path: str | Path | None = None) -> tuple[bool, list[str]]:
+    topic = _normalise_topic(topic)
+    if not topic:
+        return False, get_chat_subscription(chat_id, path=path)["topics"]
+    state = _load_subscription_state(path)
+    chats = state.setdefault("chats", {})
+    current = chats.setdefault(str(chat_id), {"topics": [], "limit": DEFAULT_NEWS_LIMIT})
+    topics = [_normalise_topic(item) for item in current.get("topics", []) if _normalise_topic(item)]
+    if any(item.casefold() == topic.casefold() for item in topics):
+        return False, topics
+    topics.append(topic)
+    current["topics"] = topics[-MAX_TOPICS_PER_CHAT:]
+    current["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    _save_subscription_state(state, path)
+    return True, current["topics"]
+
+
+def remove_subscription_topic(chat_id: int, topic: str, *, path: str | Path | None = None) -> tuple[int, list[str]]:
+    topic = _normalise_topic(topic)
+    state = _load_subscription_state(path)
+    chats = state.setdefault("chats", {})
+    current = chats.setdefault(str(chat_id), {"topics": [], "limit": DEFAULT_NEWS_LIMIT})
+    topics = [_normalise_topic(item) for item in current.get("topics", []) if _normalise_topic(item)]
+    if topic.casefold() in {"semua", "all", "*"}:
+        removed = len(topics)
+        topics = []
+    else:
+        before = len(topics)
+        topics = [item for item in topics if item.casefold() != topic.casefold()]
+        removed = before - len(topics)
+    current["topics"] = topics
+    current["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    _save_subscription_state(state, path)
+    return removed, topics
+
+
+def set_subscription_limit(chat_id: int, limit: int, *, path: str | Path | None = None) -> int:
+    limit = max(1, min(int(limit), 10))
+    state = _load_subscription_state(path)
+    current = state.setdefault("chats", {}).setdefault(str(chat_id), {"topics": [], "limit": DEFAULT_NEWS_LIMIT})
+    current["limit"] = limit
+    current["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    _save_subscription_state(state, path)
+    return limit
+
+
 def format_article(article: dict[str, Any], index: int) -> str:
     title = _escape(_compact(article.get("title") or "Tanpa judul", 180))
     # Output Telegram memakai konten hasil scrape saja.
@@ -168,6 +284,17 @@ def format_article(article: dict[str, Any], index: int) -> str:
         f"📝 Konten: {summary}",
         f"🏷️ {source} • {published_at}",
     ]
+    validity = article.get("validity_status")
+    validity_score = article.get("validity_score")
+    if validity:
+        lines.append(f"🔎 Validitas: {_escape(validity)}" + (f" ({_escape(validity_score)}/100)" if validity_score not in {None, ''} else ""))
+    structured = article.get("structured_info")
+    if isinstance(structured, dict) and structured.get("highlights"):
+        highlights = "; ".join(str(item) for item in structured.get("highlights", [])[:3])
+        lines.append(f"📌 Fakta: {_escape(_compact(highlights, 360))}")
+    supporting = article.get("supporting_sources")
+    if isinstance(supporting, list) and len(supporting) > 1:
+        lines.append(f"🧾 Sumber terkait: {_escape(', '.join(map(str, supporting[:4])))}")
     if url.startswith(("http://", "https://")):
         if text_reader_url:
             lines.append(f'🧹 <a href="{safe_text_url}">Buka teks bersih (TXT)</a>')
@@ -355,28 +482,13 @@ class TelegramNewsBot:
         except Exception as error:  # pragma: no cover - non-kritis, jangan hentikan bot.
             LOGGER.debug("Gagal mengirim typing action: %s", error)
 
-    def handle_text(self, chat_id: int, text: str) -> None:
-        LOGGER.info("Pesan dari chat_id=%s: %s", chat_id, text)
-        if not chat_is_allowed(chat_id, self.allowed_chat_ids):
-            self.send_message(chat_id, "Maaf, chat ini belum diizinkan memakai bot berita ini.")
-            return
-
-        stripped = (text or "").strip()
-        if re.match(r"^/(?:start|help)(?:@[A-Za-z0-9_]+)?$", stripped, re.IGNORECASE):
-            self.send_message(chat_id, HELP_TEXT)
-            return
-
-        theme = normalise_theme(stripped)
-        if not theme:
-            self.send_message(chat_id, HELP_TEXT)
-            return
-
+    def _search_and_send(self, chat_id: int, theme: str, *, header_theme: str | None = None, limit: int | None = None) -> None:
         self.send_typing(chat_id)
         try:
             articles, metadata = fetch_news(
                 self.jina_api_key,
                 query=theme,
-                max_results=self.news_limit,
+                max_results=limit or self.news_limit,
                 timeout=self.request_timeout,
                 max_search_rounds=self.max_search_rounds,
             )
@@ -395,8 +507,90 @@ class TelegramNewsBot:
             self.send_message(chat_id, f"Gagal memproses berita untuk tema ini: {_escape(error)}")
             return
 
-        for message in build_news_messages(theme, articles[: self.news_limit], metadata):
+        effective_limit = limit or self.news_limit
+        for message in build_news_messages(header_theme or theme, articles[:effective_limit], metadata):
             self.send_message(chat_id, message)
+
+    def handle_text(self, chat_id: int, text: str) -> None:
+        LOGGER.info("Pesan dari chat_id=%s: %s", chat_id, text)
+        if not chat_is_allowed(chat_id, self.allowed_chat_ids):
+            self.send_message(chat_id, "Maaf, chat ini belum diizinkan memakai bot berita ini.")
+            return
+
+        stripped = (text or "").strip()
+        if re.match(r"^/(?:start|help)(?:@[A-Za-z0-9_]+)?$", stripped, re.IGNORECASE):
+            self.send_message(chat_id, HELP_TEXT)
+            return
+
+        if re.match(r"^/status(?:@[A-Za-z0-9_]+)?$", stripped, re.IGNORECASE):
+            subscription = get_chat_subscription(chat_id)
+            topics = subscription.get("topics", [])
+            txt_url = _telegram_text_reader_app_url()
+            lines = [
+                "✅ <b>Status Bot Berita</b>",
+                f"Jina API: {'✅ tersedia' if self.jina_api_key else '⚠️ belum diatur'}",
+                f"Link TXT bersih: {'✅ aktif' if txt_url else '⚠️ belum aktif'}",
+                f"Limit berita/chat: {subscription.get('limit', self.news_limit)}",
+                f"Topik langganan: {len(topics)}",
+            ]
+            if topics:
+                lines.append("\n" + "\n".join(f"• {_escape(topic)}" for topic in topics))
+            self.send_message(chat_id, "\n".join(lines))
+            return
+
+        topik_match = re.match(r"^/topik(?:@[A-Za-z0-9_]+)?\s+(.+)$", stripped, re.IGNORECASE)
+        if topik_match:
+            topic = normalise_theme(topik_match.group(1))
+            added, topics = add_subscription_topic(chat_id, topic)
+            status = "ditambahkan" if added else "sudah ada"
+            self.send_message(chat_id, f"Topik <b>{_escape(topic)}</b> {status}.\n\nTopik aktif:\n" + "\n".join(f"• {_escape(item)}" for item in topics))
+            return
+
+        if re.match(r"^/topikku(?:@[A-Za-z0-9_]+)?$", stripped, re.IGNORECASE):
+            subscription = get_chat_subscription(chat_id)
+            topics = subscription.get("topics", [])
+            if not topics:
+                self.send_message(chat_id, "Belum ada topik langganan. Tambahkan dengan <code>/topik harga telur</code>.")
+            else:
+                self.send_message(chat_id, "📌 <b>Topik langganan</b>\n" + "\n".join(f"• {_escape(item)}" for item in topics))
+            return
+
+        hapus_match = re.match(r"^/hapus(?:@[A-Za-z0-9_]+)?\s+(.+)$", stripped, re.IGNORECASE)
+        if hapus_match:
+            topic = hapus_match.group(1).strip()
+            removed, topics = remove_subscription_topic(chat_id, topic)
+            if removed:
+                suffix = "\n\nSisa topik:\n" + "\n".join(f"• {_escape(item)}" for item in topics) if topics else "\n\nTidak ada topik tersisa."
+                self.send_message(chat_id, f"Berhasil menghapus {removed} topik.{suffix}")
+            else:
+                self.send_message(chat_id, "Topik tidak ditemukan. Cek daftar dengan <code>/topikku</code>.")
+            return
+
+        limit_match = re.match(r"^/limit(?:@[A-Za-z0-9_]+)?\s+(\d{1,2})$", stripped, re.IGNORECASE)
+        if limit_match:
+            value = set_subscription_limit(chat_id, int(limit_match.group(1)))
+            self.send_message(chat_id, f"Limit berita untuk chat ini disetel ke <b>{value}</b> per topik.")
+            return
+
+        pagi_match = re.match(r"^/pagi(?:@[A-Za-z0-9_]+)?(?:\s+(.+))?$", stripped, re.IGNORECASE)
+        if pagi_match:
+            requested = normalise_theme(pagi_match.group(1) or "")
+            subscription = get_chat_subscription(chat_id)
+            topics = [requested] if requested else subscription.get("topics", [])
+            limit = int(subscription.get("limit", self.news_limit) or self.news_limit)
+            if not topics:
+                self.send_message(chat_id, "Belum ada topik langganan. Tambahkan dulu, contoh: <code>/topik harga telur</code>, atau pakai <code>/pagi AI gambar</code>.")
+                return
+            for topic in topics[:MAX_TOPICS_PER_CHAT]:
+                self._search_and_send(chat_id, topic, header_theme=f"Pagi ini - {topic}", limit=limit)
+            return
+
+        theme = normalise_theme(stripped)
+        if not theme:
+            self.send_message(chat_id, HELP_TEXT)
+            return
+
+        self._search_and_send(chat_id, theme)
 
     def handle_update(self, update: dict[str, Any]) -> bool:
         if not self.update_deduper.claim(update):

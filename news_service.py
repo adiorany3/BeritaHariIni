@@ -7,6 +7,8 @@ Google News dikeluarkan secara default.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from threading import RLock
 from datetime import date, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from hashlib import sha256
@@ -240,6 +242,11 @@ DEFAULT_ALLOW_SOCIAL = False
 DEFAULT_ENABLE_ARTICLE_SCRAPE = True
 DEFAULT_ARTICLE_SCRAPE_TIMEOUT = 12
 DEFAULT_MAX_ARTICLE_SCRAPES = 5
+DEFAULT_ENABLE_ARTICLE_CACHE = True
+ARTICLE_CACHE_MAX_ITEMS = 600
+BASE_DIR = Path(__file__).resolve().parent
+ARTICLE_CACHE_PATH = BASE_DIR / "data" / "article_cache.json"
+_ARTICLE_CACHE_LOCK = RLock()
 MIN_VERIFIED_QUALITY_SCORE = 58
 MIN_UNVERIFIED_QUALITY_SCORE = 72
 
@@ -449,6 +456,17 @@ def configured_max_article_scrapes() -> int:
     return _env_int("NEWS_MAX_ARTICLE_SCRAPES", DEFAULT_MAX_ARTICLE_SCRAPES, minimum=0, maximum=20)
 
 
+def configured_enable_article_cache() -> bool:
+    """Cache scrape artikel aktif default agar GitHub Actions/Telegram lebih cepat."""
+    return _env_bool("NEWS_ENABLE_ARTICLE_CACHE", DEFAULT_ENABLE_ARTICLE_CACHE)
+
+
+def configured_article_cache_path() -> Path:
+    """Path cache artikel. Override hanya untuk test/debug lokal."""
+    raw = os.getenv("NEWS_ARTICLE_CACHE_PATH", "").strip()
+    return Path(raw) if raw else ARTICLE_CACHE_PATH
+
+
 def configured_request_timeout(default: int = DEFAULT_REQUEST_TIMEOUT) -> int:
     """Timeout HTTP client. Dapat dioverride dengan NEWS_REQUEST_TIMEOUT."""
     return _env_int("NEWS_REQUEST_TIMEOUT", default, minimum=8, maximum=90)
@@ -571,6 +589,266 @@ def extract_article_information(content: str, *, title: str = "", query: str = "
         if cut > 250:
             info = info[: cut + 1].strip()
     return info
+
+
+
+
+def _article_cache_key(url: str) -> str:
+    return sha256(url.strip().lower().encode("utf-8")).hexdigest()[:32]
+
+
+def _load_article_cache() -> dict[str, Any]:
+    """Baca cache scrape artikel dari data/article_cache.json."""
+    if not configured_enable_article_cache():
+        return {"items": {}}
+    path = configured_article_cache_path()
+    if not path.exists():
+        return {"items": {}}
+    try:
+        with path.open("r", encoding="utf-8") as file:
+            payload = json.load(file)
+    except Exception:
+        return {"items": {}}
+    if not isinstance(payload, dict):
+        return {"items": {}}
+    items = payload.get("items")
+    if not isinstance(items, dict):
+        items = {}
+    return {"items": items}
+
+
+def _save_article_cache(payload: dict[str, Any]) -> None:
+    if not configured_enable_article_cache():
+        return
+    items = payload.get("items")
+    if not isinstance(items, dict):
+        items = {}
+    # Simpan ringkas agar repo GitHub tidak membesar.
+    ordered = sorted(
+        ((key, value) for key, value in items.items() if isinstance(value, dict)),
+        key=lambda pair: str(pair[1].get("scraped_at", "")),
+    )[-ARTICLE_CACHE_MAX_ITEMS:]
+    path = configured_article_cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as file:
+        json.dump({"items": dict(ordered)}, file, ensure_ascii=False, indent=2)
+
+
+def _cache_get_article_info(url: str) -> tuple[str, str] | None:
+    if not configured_enable_article_cache():
+        return None
+    key = _article_cache_key(url)
+    with _ARTICLE_CACHE_LOCK:
+        item = _load_article_cache().get("items", {}).get(key)
+    if not isinstance(item, dict):
+        return None
+    info = str(item.get("scraped_info") or "").strip()
+    if not info:
+        return None
+    return info, "scraped_from_cache"
+
+
+def _cache_put_article_info(url: str, *, title: str, query: str, info: str) -> None:
+    if not configured_enable_article_cache() or not info:
+        return
+    key = _article_cache_key(url)
+    with _ARTICLE_CACHE_LOCK:
+        payload = _load_article_cache()
+        items = payload.setdefault("items", {})
+        items[key] = {
+            "url": url,
+            "title": title,
+            "query": query,
+            "scraped_info": info,
+            "content_hash": sha256(info.encode("utf-8")).hexdigest()[:24],
+            "scraped_at": jakarta_now().isoformat(timespec="seconds"),
+        }
+        _save_article_cache(payload)
+
+
+def structured_extraction(article: dict[str, Any], *, query: str = "") -> dict[str, Any]:
+    """Ekstrak fakta praktis dari konten berita sesuai tipe query.
+
+    Output sengaja ringan/deterministic agar aman dipakai tanpa LLM eksternal. Untuk
+    topik harga pangan, gempa, cuaca, pasar/ekonomi, dan teknologi, fungsi ini
+    mengangkat angka, lokasi, dan sinyal penting dari teks hasil scrape.
+    """
+    title = str(article.get("title") or "")
+    text = _plain_markdown_text(" ".join([title, str(article.get("scraped_info") or article.get("summary") or "")]), 4_000)
+    lower = f"{query} {title} {text}".casefold()
+
+    info_type = "umum"
+    if any(term in lower for term in ("harga", "telur", "beras", "cabai", "pangan", "minyak goreng", "daging", "ayam")):
+        info_type = "harga_pangan"
+    elif "gempa" in lower or "magnitudo" in lower:
+        info_type = "gempa"
+    elif any(term in lower for term in ("cuaca", "hujan", "bmkg", "gelombang", "peringatan dini")):
+        info_type = "cuaca"
+    elif any(term in lower for term in ("saham", "rupiah", "ihsg", "inflasi", "ekonomi", "bisnis", "ojk", "bi ")):
+        info_type = "ekonomi"
+    elif any(term in lower for term in ("ai", "kecerdasan buatan", "teknologi", "aplikasi", "digital")):
+        info_type = "teknologi"
+
+    highlights: list[str] = []
+
+    def add(label: str, value: str) -> None:
+        value = _clean_text(value, 180)
+        if value and all(value.casefold() not in item.casefold() for item in highlights):
+            highlights.append(f"{label}: {value}")
+
+    money = re.findall(r"(?:Rp\s?\d[\d.]*,?\d*|\d[\d.]*,?\d*\s?rupiah)(?:\s*/\s?(?:kg|kilogram|liter|ton|ekor))?", text, re.IGNORECASE)
+    if money:
+        add("Harga/angka uang", money[0])
+    percentages = re.findall(r"\b\d+(?:[,.]\d+)?\s?(?:%|persen)\b", text, re.IGNORECASE)
+    if percentages:
+        add("Persentase", percentages[0])
+    magnitude = re.findall(r"(?:magnitudo|M)\s?\d+(?:[,.]\d+)?", text, re.IGNORECASE)
+    if magnitude:
+        add("Magnitudo", magnitude[0])
+    depth = re.findall(r"\b\d+(?:[,.]\d+)?\s?km\b", text, re.IGNORECASE)
+    if depth and info_type == "gempa":
+        add("Kedalaman/jarak", depth[0])
+    location_match = re.search(r"\bdi\s+([A-ZÀ-ÖØ-Ý][A-Za-zÀ-ÖØ-öø-ÿ .'-]{2,60})(?:[,.;]|\s(?:pada|hari|dengan|yang|karena)\b)", text)
+    if location_match:
+        add("Lokasi", location_match.group(1).strip())
+    trend_match = re.search(r"\b(naik|turun|stabil|melonjak|merosot|menguat|melemah)\b", text, re.IGNORECASE)
+    if trend_match:
+        add("Tren", trend_match.group(1).lower())
+
+    # Tambahkan satu lead pendek jika angka tidak banyak ditemukan.
+    if len(highlights) < 2:
+        sentences = _sentence_candidates(text)
+        if sentences:
+            add("Inti", sentences[0])
+
+    labels = {
+        "harga_pangan": "Harga/pangan",
+        "gempa": "Gempa/bencana",
+        "cuaca": "Cuaca/peringatan",
+        "ekonomi": "Ekonomi/pasar",
+        "teknologi": "Teknologi",
+        "umum": "Umum",
+    }
+    return {"type": info_type, "label": labels.get(info_type, "Umum"), "highlights": highlights[:5]}
+
+
+def _token_set_for_event(article: dict[str, Any]) -> set[str]:
+    text = _normalise_search_text(str(article.get("title") or ""))
+    tokens = {
+        token for token in text.split()
+        if len(token) >= 4 and token not in QUERY_STOPWORDS and token not in GENERIC_QUERY_TERMS
+    }
+    return tokens
+
+
+def _jaccard(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / len(left | right)
+
+
+def _validity_for_article(article: dict[str, Any], *, supporting_sources: list[str] | None = None) -> tuple[int, str, list[str]]:
+    score = 0
+    reasons: list[str] = []
+    supporting_sources = supporting_sources or []
+    host = _host(str(article.get("url") or ""))
+
+    if article.get("time_status") == "verified_today":
+        score += 32
+        reasons.append("tanggal hari ini")
+    else:
+        score += 8
+        reasons.append("waktu perlu dicek")
+    if _is_trusted_news_host(host):
+        score += 18
+        reasons.append("sumber editorial tepercaya")
+    elif host:
+        score += 8
+        reasons.append("sumber langsung")
+    if str(article.get("scraped_info") or "").strip():
+        score += 22
+        reasons.append("isi artikel berhasil discrape")
+    else:
+        reasons.append("isi belum discrape")
+    try:
+        score += min(18, int(article.get("quality_score") or 0) // 5)
+    except (TypeError, ValueError):
+        pass
+    if len(set(supporting_sources)) >= 2:
+        score += 10
+        reasons.append(f"didukung {len(set(supporting_sources))} sumber")
+    elif len(set(supporting_sources)) == 1:
+        score += 3
+        reasons.append("baru satu sumber")
+    score = max(0, min(score, 100))
+    if score >= 82:
+        status = "✅ Terverifikasi kuat"
+    elif score >= 65:
+        status = "🟡 Cukup valid"
+    else:
+        status = "⚠️ Perlu cek manual"
+    return score, status, reasons[:5]
+
+
+def enrich_validity_and_structure(articles: list[dict[str, Any]], *, query: str = "", limit: int | None = None) -> list[dict[str, Any]]:
+    """Gabungkan duplikat peristiwa ringan, lalu tambahkan validitas dan structured info."""
+    if not articles:
+        return []
+    clusters: list[list[dict[str, Any]]] = []
+    cluster_tokens: list[set[str]] = []
+    for item in articles:
+        tokens = _token_set_for_event(item)
+        placed = False
+        for index, existing_tokens in enumerate(cluster_tokens):
+            if _jaccard(tokens, existing_tokens) >= 0.55:
+                clusters[index].append(item)
+                cluster_tokens[index] |= tokens
+                placed = True
+                break
+        if not placed:
+            clusters.append([item])
+            cluster_tokens.append(set(tokens))
+
+    enriched: list[dict[str, Any]] = []
+    for cluster in clusters:
+        # Wakil terbaik: skor kualitas tertinggi + konten scrape tersedia.
+        representative = max(
+            cluster,
+            key=lambda item: (
+                int(item.get("quality_score") or 0),
+                bool(str(item.get("scraped_info") or "").strip()),
+                item.get("time_status") == "verified_today",
+            ),
+        )
+        sources = []
+        source_urls = []
+        for item in cluster:
+            source = str(item.get("source") or _host(str(item.get("url") or "")) or "").strip()
+            if source and source not in sources:
+                sources.append(source)
+            url = str(item.get("url") or "").strip()
+            if url and url not in source_urls:
+                source_urls.append(url)
+        value = dict(representative)
+        value["supporting_sources"] = sources
+        value["supporting_source_count"] = len(sources)
+        value["supporting_urls"] = source_urls[:5]
+        score, status, reasons = _validity_for_article(value, supporting_sources=sources)
+        value["validity_score"] = score
+        value["validity_status"] = status
+        value["validity_reasons"] = reasons
+        value["structured_info"] = structured_extraction(value, query=query)
+        enriched.append(value)
+
+    enriched.sort(
+        key=lambda item: (
+            int(item.get("validity_score") or 0),
+            int(item.get("quality_score") or 0),
+            item.get("time_status") == "verified_today",
+        ),
+        reverse=True,
+    )
+    return enriched[:limit] if limit else enriched
 
 
 def _rfc_datetime_to_iso(value: str, now: datetime | None = None) -> str:
@@ -2001,6 +2279,10 @@ def fetch_article_information(
     if not url:
         return "", "URL artikel tidak valid"
 
+    cached = _cache_get_article_info(url)
+    if cached:
+        return cached
+
     request_timeout = configured_article_scrape_timeout(timeout or DEFAULT_ARTICLE_SCRAPE_TIMEOUT)
     headers = {
         "Accept": "application/json",
@@ -2026,6 +2308,7 @@ def fetch_article_information(
     )
     if not info:
         return "", "Reader tidak menemukan isi artikel yang cukup informatif"
+    _cache_put_article_info(url, title=str(article.get("title", "")), query=query, info=info)
     return info, "scraped_with_jina_reader"
 
 
@@ -2198,6 +2481,7 @@ def _fetch_rounds(
         query=primary_query,
         timeout=timeout,
     )
+    articles = enrich_validity_and_structure(articles, query=primary_query, limit=max_results)
 
     raw_candidates = sum(stats["raw_candidates"] for _, stats, _ in parsed_rounds)
     raw_candidates += len(rss_items)
@@ -2216,6 +2500,11 @@ def _fetch_rounds(
             "strict_query_relevance": "true" if _query_is_specific(primary_query) else "false",
             "query_terms": ", ".join(_specific_query_token_list(primary_query)),
             "query_phrase": _specific_query_phrase(primary_query),
+            "article_cache_enabled": str(configured_enable_article_cache()).lower(),
+            "validity_mode": "enabled",
+            "strong_validity_articles": str(sum(str(item.get("validity_status", "")).startswith("✅") for item in articles)),
+            "structured_extraction": "enabled",
+            "event_dedupe": "enabled",
             "result_mode": "verified_today" if verified_count else (
                 "needs_time_verification" if used_unverified else "none"
             ),

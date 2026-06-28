@@ -406,7 +406,7 @@ Tim penyelamat masih menyisir lokasi terdampak untuk mencari korban dan memastik
         response = Mock()
         response.text = '{"data":{"content":"Pedagang menyebut harga telur ayam naik menjadi Rp32.000 per kilogram hari ini. Kenaikan terjadi karena pasokan berkurang dari sentra produksi."}}'
         response.raise_for_status = Mock()
-        with patch.dict(os.environ, {"NEWS_ARTICLE_SCRAPE_TIMEOUT": "8"}, clear=False):
+        with patch.dict(os.environ, {"NEWS_ARTICLE_SCRAPE_TIMEOUT": "8", "NEWS_ENABLE_ARTICLE_CACHE": "0"}, clear=False):
             with patch("news_service.requests.get", return_value=response) as mocked_get:
                 info, status = fetch_article_information(
                     "token",

@@ -415,3 +415,97 @@ python -m unittest discover -s tests -v
 ### Catatan link TXT bersih di Telegram
 
 Jika Telegram dikirim dari **GitHub Actions**, pastikan URL app juga ada di **GitHub Actions Secrets/Variables** (`STREAMLIT_APP_URL` atau `TELEGRAM_TEXT_READER_APP_URL`). Secrets Streamlit Cloud hanya terbaca oleh aplikasi Streamlit, bukan oleh runner GitHub. Versi ini juga menyediakan fallback default ke `https://beritaterbaru.streamlit.app` agar link **Buka teks bersih (TXT)** tetap muncul.
+
+## Penyempurnaan Pro: validitas tinggi, langganan topik, dan akses praktis
+
+Versi ini menambahkan beberapa fitur lanjutan agar digest Telegram lebih lengkap dan lebih mudah dipercaya:
+
+### Validity score
+
+Setiap artikel diperkaya dengan skor/status validitas:
+
+- `✅ Terverifikasi kuat`: tanggal hari ini, sumber editorial baik, konten berhasil discrape, dan sinyal kualitas kuat.
+- `🟡 Cukup valid`: sumber/konten cukup baik, tetapi belum sekuat artikel terverifikasi penuh.
+- `⚠️ Perlu cek manual`: artikel masih bisa dibaca, tetapi waktu/konten/sumber kurang kuat.
+
+Telegram dan dashboard menampilkan skor validitas, alasan validitas, dan jumlah sumber terkait bila ada.
+
+### Structured extraction
+
+Konten hasil scrape sekarang dianalisis ringan untuk mengambil fakta penting sesuai topik. Contoh:
+
+- `harga telur`: harga/angka uang, lokasi, tren naik/turun/stabil.
+- `gempa`: magnitudo, lokasi, kedalaman/jarak.
+- `cuaca`: wilayah dan sinyal peringatan.
+- `ekonomi/saham/rupiah`: angka, persen, dan tren.
+- `AI/teknologi`: inti informasi teknologi.
+
+Fitur ini tidak memakai LLM tambahan; ekstraksi berbasis regex/heuristik agar murah, cepat, dan deterministik.
+
+### Anti-duplikat peristiwa
+
+Artikel dengan judul/peristiwa yang sangat mirip akan digabung sebagai satu klaster. Dashboard dan Telegram tetap menampilkan satu wakil terbaik, sambil menyimpan daftar `supporting_sources` untuk menunjukkan sumber terkait.
+
+### Cache scrape artikel
+
+Jina Reader cache aktif default melalui:
+
+```bash
+NEWS_ENABLE_ARTICLE_CACHE=1
+```
+
+Cache disimpan di:
+
+```text
+data/article_cache.json
+```
+
+Manfaatnya:
+
+- Telegram lebih cepat.
+- GitHub Actions lebih hemat waktu.
+- Artikel yang sama tidak discrape ulang berkali-kali.
+
+Workflow GitHub Actions ikut commit cache ini agar run berikutnya bisa memakai ulang hasil scrape.
+
+### Telegram: langganan topik harian
+
+Bot sekarang mendukung command berikut:
+
+| Command | Fungsi |
+| --- | --- |
+| `/cari harga telur` | Cari berita tema tertentu sekarang. |
+| `/topik harga telur` | Simpan topik langganan harian untuk chat tersebut. |
+| `/topikku` | Lihat daftar topik langganan. |
+| `/hapus harga telur` | Hapus satu topik. |
+| `/hapus semua` | Hapus semua topik di chat. |
+| `/limit 5` | Atur jumlah berita per topik, 1–10. |
+| `/pagi` | Kirim digest sekarang berdasarkan topik langganan. |
+| `/pagi AI gambar` | Kirim digest satu topik tanpa menyimpan. |
+| `/status` | Cek status bot, Jina, link TXT, dan topik aktif. |
+
+State topik disimpan di:
+
+```text
+data/telegram_subscriptions.json
+```
+
+### GitHub Actions: digest pagi berdasarkan topik langganan
+
+Default baru:
+
+```bash
+WORKER_USE_TELEGRAM_SUBSCRIPTIONS=1
+```
+
+Jika `data/telegram_subscriptions.json` berisi topik per chat, worker pagi akan mengirim digest per topik. Jika belum ada topik langganan, worker fallback ke mode lama: satu digest umum berdasarkan `NEWS_QUERY` / `WORKER_TELEGRAM_TITLE`.
+
+Pastikan workflow commit state berikut:
+
+```text
+data/telegram_digest_state.json
+data/article_cache.json
+data/telegram_subscriptions.json
+```
+
+Dengan begitu, langganan topik, dedupe harian, dan cache scrape tetap tersimpan antar-run GitHub Actions.

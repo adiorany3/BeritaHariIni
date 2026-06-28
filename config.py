@@ -33,6 +33,8 @@ CONFIG_ENV_NAMES: tuple[str, ...] = (
     "NEWS_ENABLE_ARTICLE_SCRAPE",
     "NEWS_ARTICLE_SCRAPE_TIMEOUT",
     "NEWS_MAX_ARTICLE_SCRAPES",
+    "NEWS_ENABLE_ARTICLE_CACHE",
+    "NEWS_ARTICLE_CACHE_PATH",
     "NEWS_TEXT_ONLY_MAX_CHARS",
     "TELEGRAM_BOT_TOKEN",
     "TELEGRAM_ALLOWED_CHAT_IDS",
@@ -53,6 +55,7 @@ CONFIG_ENV_NAMES: tuple[str, ...] = (
     "WORKER_FORCE_SEND",
     "WORKER_DEDUPE_DATE",
     "WORKER_DEDUPE_TIMEZONE",
+    "WORKER_USE_TELEGRAM_SUBSCRIPTIONS",
     "LOG_LEVEL",
 )
 
@@ -109,6 +112,7 @@ SPECIAL_SECTION_ALIASES: dict[str, tuple[tuple[str, str], ...]] = {
     "WORKER_FORCE_SEND": (("worker", "force_send"),),
     "WORKER_DEDUPE_DATE": (("worker", "dedupe_date"),),
     "WORKER_DEDUPE_TIMEZONE": (("worker", "dedupe_timezone"),),
+    "WORKER_USE_TELEGRAM_SUBSCRIPTIONS": (("worker", "use_telegram_subscriptions"), ("telegram", "use_subscriptions")),
     "LOG_LEVEL": (("app", "log_level"),),
 }
 

@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 from config import apply_secrets_to_environment, get_secret, get_secret_bool, get_secret_int
 from news_service import fetch_news
 from storage import read_json, write_json
-from telegram_bot import TelegramNewsBot, build_news_messages, parse_allowed_chat_ids
+from telegram_bot import TelegramNewsBot, build_news_messages, list_subscription_targets, parse_allowed_chat_ids
 
 BASE_DIR = Path(__file__).resolve().parent
 LATEST_PATH = BASE_DIR / "data" / "latest_news.json"
@@ -132,6 +132,61 @@ def send_morning_digest(
     return sent
 
 
+
+
+def send_subscription_digests(
+    *,
+    token: str,
+    jina_api_key: str,
+    subscriptions: dict[int, dict],
+    request_timeout: int,
+    max_search_rounds: int | None,
+    default_limit: int,
+    date_key: str,
+    digest_state: dict,
+    dedupe_enabled: bool = True,
+    force_send: bool = False,
+) -> int:
+    """Kirim digest pagi berdasarkan topik langganan per chat.
+
+    Return jumlah chat yang berhasil dikirimi setidaknya satu pesan.
+    """
+    if not token:
+        raise ValueError("TELEGRAM_BOT_TOKEN belum diatur.")
+    bot = TelegramNewsBot(
+        token=token,
+        jina_api_key=jina_api_key,
+        news_limit=default_limit,
+        request_timeout=request_timeout,
+        max_search_rounds=max_search_rounds,
+    )
+    sent_chats = 0
+    for chat_id, config in sorted(subscriptions.items()):
+        topics = [str(topic).strip() for topic in config.get("topics", []) if str(topic).strip()]
+        if not topics:
+            continue
+        limit = max(1, min(int(config.get("limit", default_limit) or default_limit), 10))
+        any_sent = False
+        for topic in topics:
+            if dedupe_enabled and not force_send and _digest_already_sent(digest_state, chat_id=chat_id, theme=topic, date_key=date_key):
+                LOGGER.info("Topik %s untuk chat %s sudah terkirim pada %s; lewati.", topic, chat_id, date_key)
+                continue
+            articles, metadata = fetch_news(
+                jina_api_key,
+                query=topic,
+                max_results=limit,
+                timeout=request_timeout,
+                max_search_rounds=max_search_rounds,
+            )
+            for message in build_news_messages(f"Pagi ini - {topic}", articles[:limit], metadata):
+                bot.send_message(chat_id, message)
+            _mark_digest_sent(digest_state, chat_id=chat_id, theme=topic, date_key=date_key)
+            any_sent = True
+        if any_sent:
+            sent_chats += 1
+    return sent_chats
+
+
 def main() -> None:
     apply_secrets_to_environment()
     api_key = get_secret("JINA_API_KEY", "")
@@ -191,32 +246,50 @@ def main() -> None:
             get_secret("WORKER_DEDUPE_TIMEZONE", DEFAULT_DEDUPE_TIMEZONE).strip() or DEFAULT_DEDUPE_TIMEZONE
         )
         digest_state = _normalise_digest_state(read_json(DIGEST_STATE_PATH, {"sent_digests": []}))
-        target_chat_ids = set(chat_ids)
-        if dedupe_enabled and not force_send:
-            target_chat_ids = _unsent_chat_ids(
-                chat_ids, state=digest_state, theme=theme, date_key=dedupe_date
-            )
-        if not target_chat_ids:
-            LOGGER.info(
-                "Digest Telegram untuk %s sudah pernah terkirim hari ini; pengiriman dilewati.",
-                dedupe_date,
-            )
-            write_json(DIGEST_STATE_PATH, digest_state)
-        else:
-            sent = send_morning_digest(
+        use_subscriptions = get_secret_bool("WORKER_USE_TELEGRAM_SUBSCRIPTIONS", True)
+        subscriptions = list_subscription_targets() if use_subscriptions else {}
+        if subscriptions:
+            sent = send_subscription_digests(
                 token=token,
                 jina_api_key=api_key,
-                chat_ids=target_chat_ids,
-                theme=theme,
-                articles=articles,
-                metadata=metadata,
-                limit=telegram_limit,
+                subscriptions=subscriptions,
                 request_timeout=telegram_timeout,
+                max_search_rounds=max_search_rounds,
+                default_limit=telegram_limit,
+                date_key=dedupe_date,
+                digest_state=digest_state,
+                dedupe_enabled=dedupe_enabled,
+                force_send=force_send,
             )
-            for chat_id in target_chat_ids:
-                _mark_digest_sent(digest_state, chat_id=chat_id, theme=theme, date_key=dedupe_date)
             write_json(DIGEST_STATE_PATH, digest_state)
-            LOGGER.info("Digest Telegram terkirim ke %d chat.", sent)
+            LOGGER.info("Digest topik langganan Telegram terkirim ke %d chat.", sent)
+        else:
+            target_chat_ids = set(chat_ids)
+            if dedupe_enabled and not force_send:
+                target_chat_ids = _unsent_chat_ids(
+                    chat_ids, state=digest_state, theme=theme, date_key=dedupe_date
+                )
+            if not target_chat_ids:
+                LOGGER.info(
+                    "Digest Telegram untuk %s sudah pernah terkirim hari ini; pengiriman dilewati.",
+                    dedupe_date,
+                )
+                write_json(DIGEST_STATE_PATH, digest_state)
+            else:
+                sent = send_morning_digest(
+                    token=token,
+                    jina_api_key=api_key,
+                    chat_ids=target_chat_ids,
+                    theme=theme,
+                    articles=articles,
+                    metadata=metadata,
+                    limit=telegram_limit,
+                    request_timeout=telegram_timeout,
+                )
+                for chat_id in target_chat_ids:
+                    _mark_digest_sent(digest_state, chat_id=chat_id, theme=theme, date_key=dedupe_date)
+                write_json(DIGEST_STATE_PATH, digest_state)
+                LOGGER.info("Digest Telegram terkirim ke %d chat.", sent)
     elif get_secret_bool("WORKER_REQUIRE_TELEGRAM", False):
         raise RuntimeError(
             "WORKER_REQUIRE_TELEGRAM=1, tetapi TELEGRAM_BOT_TOKEN atau "
