@@ -486,22 +486,32 @@ def configured_jina_respond_with() -> str:
 JINA_FAILOVER_STATUS_CODES = {401, 403, 408, 409, 425, 429, 500, 502, 503, 504}
 
 
-def jina_api_keys_from(value: Any = "") -> list[str]:
+def jina_api_keys_from(value: Any = "", *, include_env: bool = False) -> list[str]:
     """Normalisasi satu/banyak API key Jina menjadi daftar failover.
 
-    Didukung:
-    - `JINA_API_KEY=key1`
-    - `JINA_API_KEY=key1,key2,key3`
-    - `JINA_API_KEYS=["key1", "key2"]` di Streamlit/GitHub Secrets
+    Fungsi ini sengaja *murni* secara default: bila `value` diberikan, hasilnya
+    hanya berasal dari `value` tersebut. Ini penting agar test/unit parser tidak
+    ikut tercampur secret environment di GitHub Actions.
+
+    Didukung untuk `value`:
+    - `key1`
+    - `key1,key2,key3`
+    - `["key1", "key2"]`
+    - list/tuple/set dari Streamlit Secrets
     - newline/semicolon separated string.
+
+    Set `include_env=True` hanya untuk loader konfigurasi yang memang ingin
+    membaca fallback dari environment variable `JINA_API_KEYS`, `JINA_KEYS`, atau
+    `JINA_API_KEY`.
     """
     candidates: list[Any] = []
     if value not in {None, ""}:
         candidates.append(value)
-    for env_name in ("JINA_API_KEYS", "JINA_KEYS", "JINA_API_KEY"):
-        env_value = os.getenv(env_name, "")
-        if env_value:
-            candidates.append(env_value)
+    if include_env:
+        for env_name in ("JINA_API_KEYS", "JINA_KEYS", "JINA_API_KEY"):
+            env_value = os.getenv(env_name, "")
+            if env_value:
+                candidates.append(env_value)
 
     keys: list[str] = []
     seen: set[str] = set()
@@ -534,9 +544,9 @@ def jina_api_keys_from(value: Any = "") -> list[str]:
     return keys
 
 
-def jina_api_key_count(value: Any = "") -> int:
+def jina_api_key_count(value: Any = "", *, include_env: bool = False) -> int:
     """Jumlah key aktif tanpa membuka isi token."""
-    return len(jina_api_keys_from(value))
+    return len(jina_api_keys_from(value, include_env=include_env))
 
 
 def _jina_key_label(index: int) -> str:
