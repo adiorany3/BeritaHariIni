@@ -11,7 +11,7 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
 from config import apply_secrets_to_environment, get_secret, get_secret_bool, has_secret
-from news_service import CATEGORY_ORDER, build_text_only_reader_url, category_labels, default_query, fetch_article_text_document, fetch_news_with_raw
+from news_service import CATEGORY_ORDER, build_text_only_reader_url, category_labels, default_query, fetch_article_text_document, fetch_news_with_raw, jina_api_key_count
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -246,9 +246,10 @@ def render_telegram_controls() -> None:
     """
     st.subheader("Telegram Bot")
     token_ready = has_secret("TELEGRAM_BOT_TOKEN")
-    jina_ready = has_secret("JINA_API_KEY")
+    jina_key_total = jina_api_key_count(get_secret("JINA_API_KEY", ""))
+    jina_ready = jina_key_total > 0
     st.write("Token bot:", "✅ tersedia" if token_ready else "⚠️ belum diatur")
-    st.write("Token Jina:", "✅ tersedia" if jina_ready else "⚠️ belum diatur")
+    st.write("Token Jina:", f"✅ {jina_key_total} key tersedia" if jina_ready else "⚠️ belum diatur")
 
     if not token_ready:
         st.caption("Isi [telegram].bot_token di Streamlit Secrets agar bot bisa merespons pesan.")
@@ -315,6 +316,14 @@ def display_raw_response(raw_markdown: str, metadata: dict[str, str]) -> None:
         col3.metric("RSS dicek", metadata.get("rss_feeds_checked", "0"))
         col4.metric("Pencarian Jina", metadata.get("search_rounds", "0"))
         col5.metric("Scrape berhasil", f"{metadata.get('article_scrape_success', '0')}/{metadata.get('article_scrape_attempted', '0')}")
+        if metadata.get("jina_key_count"):
+            st.caption(
+                f"Jina failover: {metadata.get('jina_key_count')} key tersedia, "
+                f"dipakai {metadata.get('jina_key_used', '-')} "
+                f"({metadata.get('jina_key_failovers', '0')} failover)."
+            )
+            if metadata.get("jina_key_failover_events"):
+                st.caption(f"Event failover: {metadata.get('jina_key_failover_events')}")
         st.code(raw_markdown, language="json", wrap_lines=True)
         st.download_button(
             "Unduh respons sumber",
@@ -332,7 +341,8 @@ st.caption(
 
 with st.sidebar:
     st.header("Status")
-    st.write("Token Jina:", "✅ tersedia" if has_secret("JINA_API_KEY") else "⚠️ belum diatur")
+    _jina_key_total = jina_api_key_count(get_secret("JINA_API_KEY", ""))
+    st.write("Token Jina:", f"✅ {_jina_key_total} key tersedia" if _jina_key_total else "⚠️ belum diatur")
     st.write("Pembaruan dashboard:", "otomatis setiap 5 menit")
     st.write("RSS penerbit:", "✅ aktif" if os.getenv("NEWS_ENABLE_RSS", "1") not in {"0", "false", "False"} else "nonaktif")
     st.write("Mode Jina:", os.getenv("JINA_RESPOND_WITH", "no-content"))
@@ -359,8 +369,8 @@ with st.expander("Cari berita langsung", expanded=True):
     query = st.text_input("Kata kunci", value=default_query())
     if st.button("Cari berita terbaru hari ini", type="primary"):
         api_key = get_secret("JINA_API_KEY")
-        if not api_key:
-            st.error("Atur JINA_API_KEY di Streamlit Secrets untuk menjalankan pencarian langsung. Jangan commit token ke GitHub.")
+        if not jina_api_key_count(api_key):
+            st.error("Atur JINA_API_KEY atau JINA_API_KEYS di Streamlit Secrets untuk menjalankan pencarian langsung. Jangan commit token ke GitHub.")
         else:
             try:
                 with st.spinner("Mengambil, menyaring, dan men-scrape konten berita..."):

@@ -21,7 +21,7 @@ from typing import Any
 import requests
 
 from config import apply_secrets_to_environment, get_secret, get_secret_bool, get_secret_int
-from news_service import build_text_only_reader_url, fetch_news
+from news_service import build_text_only_reader_url, fetch_news, jina_api_key_count
 from storage import read_json, write_json
 
 LOGGER = logging.getLogger(__name__)
@@ -496,7 +496,7 @@ class TelegramNewsBot:
             self.send_message(
                 chat_id,
                 f"Konfigurasi belum lengkap: {_escape(error)}\n\n"
-                "Atur <code>JINA_API_KEY</code> jika ingin fallback Jina Search dan scrape artikel aktif.",
+                "Atur <code>JINA_API_KEY</code> atau <code>JINA_API_KEYS</code> jika ingin fallback Jina Search dan scrape artikel aktif.",
             )
             return
         except requests.RequestException as error:
@@ -528,7 +528,7 @@ class TelegramNewsBot:
             txt_url = _telegram_text_reader_app_url()
             lines = [
                 "✅ <b>Status Bot Berita</b>",
-                f"Jina API: {'✅ tersedia' if self.jina_api_key else '⚠️ belum diatur'}",
+                f"Jina API: {'✅ ' + str(jina_api_key_count(self.jina_api_key)) + ' key tersedia' if jina_api_key_count(self.jina_api_key) else '⚠️ belum diatur'}",
                 f"Link TXT bersih: {'✅ aktif' if txt_url else '⚠️ belum aktif'}",
                 f"Limit berita/chat: {subscription.get('limit', self.news_limit)}",
                 f"Topik langganan: {len(topics)}",

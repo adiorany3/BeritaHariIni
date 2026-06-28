@@ -11,6 +11,7 @@ Versi ini tidak lagi menampilkan hasil tersimpan dari workflow. Telegram menduku
 - **RSS penerbit resmi diprioritaskan** sebelum SERP umum, tetapi sekarang tetap mengikuti keyword search. Untuk keyword spesifik, RSS umum yang tidak cocok akan dibuang dan aplikasi lanjut ke Jina fallback.
 - **Konten artikel di-scrape otomatis** memakai Jina Reader setelah URL final lolos filter. Dashboard menampilkan konten hasil scrape langsung di kartu berita, menyediakan tombol **Buka teks bersih (TXT)** yang menghapus `![Image ...]`, dan tetap menyediakan tombol **Buka berita asli**.
 - Query default tidak lagi menyebut platform sosial/video. Jina fallback memakai query `site:` **satu domain per request** ke media berita seperti Kompas, Detik, CNN Indonesia, CNBC Indonesia, Tempo, Antara, Liputan6, Bisnis, Katadata, Kontan, Republika, Kumparan, Tirto, Suara, dan Okezone. Query sengaja tidak memakai `OR`, tanda kurung, quote frasa, atau rangkaian `-site:` panjang agar tidak ditolak `s.jina.ai` dengan 422.
+- **Failover multi API key Jina**: `JINA_API_KEY` boleh berisi satu key atau beberapa key dipisahkan koma/newline. Format `JINA_API_KEYS = ["key1", "key2"]` juga didukung di Streamlit/GitHub Secrets. Jika satu key terkena 401/403/429/5xx/koneksi bermasalah, sistem otomatis mencoba key berikutnya tanpa mengekspos token di dashboard/log.
 - Respons Jina tetap memakai mode cepat:
   - `Accept: application/json`
   - `X-Respond-With: no-content`
@@ -60,6 +61,33 @@ Versi ini tidak lagi menampilkan hasil tersimpan dari workflow. Telegram menduku
 └── requirements.txt
 ```
 
+### Multi API key Jina / failover
+
+Jika punya lebih dari satu API key Jina, simpan sebagai salah satu format berikut. Sistem akan mencoba key pertama, lalu pindah ke key berikutnya jika terjadi status `401`, `403`, `429`, `5xx`, timeout, atau gangguan koneksi. Error format query seperti `422` tetap ditangani dengan penyederhanaan query, bukan dianggap key rusak.
+
+Streamlit Secrets root-level:
+
+```toml
+JINA_API_KEYS = ["jina_key_utama", "jina_key_cadangan_1", "jina_key_cadangan_2"]
+```
+
+Atau section `[jina]`:
+
+```toml
+[jina]
+api_keys = ["jina_key_utama", "jina_key_cadangan_1", "jina_key_cadangan_2"]
+respond_with = "no-content"
+page_timeout = "12"
+```
+
+GitHub Actions Secrets juga bisa memakai `JINA_API_KEYS` dengan isi:
+
+```text
+jina_key_utama,jina_key_cadangan_1,jina_key_cadangan_2
+```
+
+Dashboard/audit hanya menampilkan jumlah key dan label aman seperti `key_1` atau `key_2`, bukan isi token.
+
 ## Jalankan di komputer
 
 ```bash
@@ -73,6 +101,8 @@ Ekspor environment variable:
 
 ```bash
 export JINA_API_KEY="jina_kunci_anda"
+# Opsional failover multi key:
+# export JINA_API_KEYS="jina_key_utama,jina_key_cadangan_1,jina_key_cadangan_2"
 # Default yang disarankan
 export NEWS_ENABLE_RSS="1"
 export NEWS_MAX_RSS_FEEDS="8"
@@ -177,7 +207,8 @@ Secret GitHub yang wajib dibuat:
 
 | Secret | Isi |
 | --- | --- |
-| `JINA_API_KEY` | API key Jina Reader/Search. |
+| `JINA_API_KEY` | API key Jina Reader/Search utama. |
+| `JINA_API_KEYS` | Opsional. Beberapa key cadangan, contoh `key1,key2,key3`. Jika diset, worker bisa failover saat key utama rate-limit/expired/error. |
 | `STREAMLIT_APP_URL` | URL publik app Streamlit, contoh `https://beritaterbaru.streamlit.app`. Dipakai supaya link Telegram membuka halaman TXT internal yang menghapus `![Image ...]`. |
 | `TELEGRAM_TEXT_READER_APP_URL` | Opsional. URL pembaca TXT khusus untuk Telegram. Jika kosong, Telegram memakai `STREAMLIT_APP_URL`. |
 | `TELEGRAM_BOT_TOKEN` | Token bot dari @BotFather. |

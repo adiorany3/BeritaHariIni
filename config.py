@@ -15,6 +15,8 @@ BASE_DIR = Path(__file__).resolve().parent
 
 CONFIG_ENV_NAMES: tuple[str, ...] = (
     "JINA_API_KEY",
+    "JINA_API_KEYS",
+    "JINA_KEYS",
     "STREAMLIT_APP_URL",
     "PUBLIC_APP_URL",
     "APP_URL",
@@ -59,8 +61,16 @@ CONFIG_ENV_NAMES: tuple[str, ...] = (
     "LOG_LEVEL",
 )
 
+ENV_NAME_ALIASES: dict[str, tuple[str, ...]] = {
+    "JINA_API_KEY": ("JINA_API_KEYS", "JINA_KEYS"),
+    "JINA_API_KEYS": ("JINA_API_KEY", "JINA_KEYS"),
+    "JINA_KEYS": ("JINA_API_KEYS", "JINA_API_KEY"),
+}
+
 SPECIAL_SECTION_ALIASES: dict[str, tuple[tuple[str, str], ...]] = {
-    "JINA_API_KEY": (("jina", "api_key"), ("jina", "key")),
+    "JINA_API_KEY": (("jina", "api_key"), ("jina", "key"), ("jina", "api_keys"), ("jina", "keys"), ("jina", "key_ring")),
+    "JINA_API_KEYS": (("jina", "api_keys"), ("jina", "keys"), ("jina", "key_ring"), ("jina", "api_key"), ("jina", "key")),
+    "JINA_KEYS": (("jina", "keys"), ("jina", "api_keys"), ("jina", "key_ring"), ("jina", "api_key"), ("jina", "key")),
     "STREAMLIT_APP_URL": (
         ("app", "url"),
         ("app", "base_url"),
@@ -205,6 +215,10 @@ def get_secret(name: str, default: str = "") -> str:
     env_value = os.getenv(name)
     if env_value not in {None, ""}:
         return str(env_value).strip()
+    for alias in ENV_NAME_ALIASES.get(name, ()):  # misalnya JINA_API_KEYS sebagai cadangan root env
+        alias_value = os.getenv(alias)
+        if alias_value not in {None, ""}:
+            return str(alias_value).strip()
 
     secrets = _combined_secrets()
     if not secrets:
@@ -213,6 +227,13 @@ def get_secret(name: str, default: str = "") -> str:
     root_value = _mapping_get_case_insensitive(secrets, name)
     if root_value is None:
         root_value = _mapping_get_case_insensitive(secrets, name.lower())
+    if root_value is None:
+        for alias in ENV_NAME_ALIASES.get(name, ()):  # root-level Streamlit Secrets alias
+            root_value = _mapping_get_case_insensitive(secrets, alias)
+            if root_value is None:
+                root_value = _mapping_get_case_insensitive(secrets, alias.lower())
+            if root_value is not None:
+                break
     normalised = _normalise_secret_value(root_value)
     if normalised:
         return normalised

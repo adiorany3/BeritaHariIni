@@ -19,6 +19,8 @@ from news_service import (
     build_text_only_reader_url,
     reader_payload_to_clean_txt,
     fetch_raw_markdown,
+    jina_api_key_count,
+    jina_api_keys_from,
     source_scoped_query,
     parse_search_response,
     parse_search_response_details,
@@ -527,6 +529,65 @@ Artikel membahas peluncuran mobil listrik baru dan rencana produksi kendaraan ra
         self.assertNotIn('"', first_query)
         self.assertIn("ai gambar", retry_query)
         self.assertEqual(metadata["jina_retried_after_422"], "true")
+
+
+    def test_jina_api_keys_from_accepts_multiple_secret_formats(self) -> None:
+        self.assertEqual(jina_api_keys_from('key-a,key-b\nkey-c; key-a'), ['key-a', 'key-b', 'key-c'])
+        self.assertEqual(jina_api_key_count('["key-a", "key-b"]'), 2)
+
+    def test_fetch_raw_markdown_fails_over_to_next_jina_key(self) -> None:
+        first = Mock()
+        first.text = ""
+        first.headers = {"content-type": "application/json"}
+        first.status_code = 429
+        http_error = requests.HTTPError("429 Too Many Requests")
+        http_error.response = first
+        first.raise_for_status.side_effect = http_error
+
+        second = Mock()
+        second.text = '{"data": []}'
+        second.headers = {"content-type": "application/json"}
+        second.raise_for_status = Mock()
+
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("news_service.requests.get", side_effect=[first, second]) as mocked_get:
+                raw, metadata = fetch_raw_markdown("key-a,key-b", query="berita", now=datetime(2026, 6, 27, 14, 0))
+
+        self.assertEqual(raw, '{"data": []}')
+        self.assertEqual(mocked_get.call_count, 2)
+        self.assertEqual(mocked_get.call_args_list[0].kwargs["headers"]["Authorization"], "Bearer key-a")
+        self.assertEqual(mocked_get.call_args_list[1].kwargs["headers"]["Authorization"], "Bearer key-b")
+        self.assertEqual(metadata["jina_key_count"], "2")
+        self.assertEqual(metadata["jina_key_used"], "key_2")
+        self.assertEqual(metadata["jina_key_failovers"], "1")
+        self.assertNotIn("key-a", metadata["jina_key_failover_events"])
+
+    def test_reader_uses_next_jina_key_when_first_is_limited(self) -> None:
+        first = Mock()
+        first.text = ""
+        first.headers = {"content-type": "application/json"}
+        first.status_code = 429
+        http_error = requests.HTTPError("429 Too Many Requests")
+        http_error.response = first
+        first.raise_for_status.side_effect = http_error
+
+        second = Mock()
+        second.text = '{"data":{"content":"Harga telur ayam naik menjadi Rp32.000 per kilogram di pasar tradisional. Pedagang menyebut pasokan dari sentra produksi berkurang."}}'
+        second.headers = {"content-type": "application/json"}
+        second.raise_for_status = Mock()
+
+        with patch.dict(os.environ, {"NEWS_ARTICLE_SCRAPE_TIMEOUT": "8"}, clear=True):
+            with patch("news_service.requests.get", side_effect=[first, second]) as mocked_get:
+                text, status = fetch_article_text_document(
+                    "key-a,key-b",
+                    "https://www.kompas.com/read/2026/06/27/harga-telur",
+                    title="Harga Telur Naik",
+                )
+
+        self.assertEqual(status, "text_only_scraped_with_jina_reader")
+        self.assertIn("Harga Telur Naik", text)
+        self.assertEqual(mocked_get.call_args_list[0].kwargs["headers"]["Authorization"], "Bearer key-a")
+        self.assertEqual(mocked_get.call_args_list[1].kwargs["headers"]["Authorization"], "Bearer key-b")
 
     def test_today_indonesia(self) -> None:
         now = datetime(2026, 6, 27, 10, 0)

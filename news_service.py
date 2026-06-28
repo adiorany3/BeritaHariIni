@@ -483,6 +483,121 @@ def configured_jina_respond_with() -> str:
     return value if value in {"no-content", "markdown", "html", "text"} else DEFAULT_JINA_RESPOND_WITH
 
 
+JINA_FAILOVER_STATUS_CODES = {401, 403, 408, 409, 425, 429, 500, 502, 503, 504}
+
+
+def jina_api_keys_from(value: Any = "") -> list[str]:
+    """Normalisasi satu/banyak API key Jina menjadi daftar failover.
+
+    Didukung:
+    - `JINA_API_KEY=key1`
+    - `JINA_API_KEY=key1,key2,key3`
+    - `JINA_API_KEYS=["key1", "key2"]` di Streamlit/GitHub Secrets
+    - newline/semicolon separated string.
+    """
+    candidates: list[Any] = []
+    if value not in {None, ""}:
+        candidates.append(value)
+    for env_name in ("JINA_API_KEYS", "JINA_KEYS", "JINA_API_KEY"):
+        env_value = os.getenv(env_name, "")
+        if env_value:
+            candidates.append(env_value)
+
+    keys: list[str] = []
+    seen: set[str] = set()
+
+    def add_key(raw: Any) -> None:
+        key = str(raw or "").strip().strip('"\'')
+        if not key or key in seen:
+            return
+        keys.append(key)
+        seen.add(key)
+
+    for candidate in candidates:
+        if isinstance(candidate, (list, tuple, set)):
+            for item in candidate:
+                add_key(item)
+            continue
+        text = str(candidate or "").strip()
+        if not text:
+            continue
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            for item in parsed:
+                add_key(item)
+            continue
+        for part in re.split(r"[,;\n\r]+", text):
+            add_key(part)
+    return keys
+
+
+def jina_api_key_count(value: Any = "") -> int:
+    """Jumlah key aktif tanpa membuka isi token."""
+    return len(jina_api_keys_from(value))
+
+
+def _jina_key_label(index: int) -> str:
+    return f"key_{index + 1}"
+
+
+def _should_failover_jina_status(status_code: int | None) -> bool:
+    return int(status_code or 0) in JINA_FAILOVER_STATUS_CODES
+
+
+def _jina_failover_summary(events: list[str]) -> str:
+    return "; ".join(events[-8:])
+
+
+def _jina_reader_get_with_failover(
+    api_key: str,
+    reader_url: str,
+    *,
+    headers: dict[str, str],
+    timeout: int,
+) -> tuple[requests.Response, dict[str, str]]:
+    """GET Jina Reader memakai key failover tanpa mengekspos token di error/metadata."""
+    keys = jina_api_keys_from(api_key)
+    # Reader bisa dipakai tanpa Authorization pada beberapa kasus publik; tetap izinkan kosong
+    # agar halaman TXT tidak langsung mati jika user hanya ingin mencoba link publik.
+    if not keys:
+        keys = [""]
+
+    events: list[str] = []
+    last_error: BaseException | None = None
+    for index, key in enumerate(keys):
+        request_headers = dict(headers)
+        if key:
+            request_headers["Authorization"] = f"Bearer {key}"
+        try:
+            response = requests.get(reader_url, headers=request_headers, timeout=timeout)
+            response.raise_for_status()
+            return response, {
+                "jina_key_count": str(len([item for item in keys if item])),
+                "jina_key_used": _jina_key_label(index) if key else "public",
+                "jina_key_failovers": str(len(events)),
+                "jina_key_failover_events": _jina_failover_summary(events),
+            }
+        except requests.HTTPError as error:
+            status_code = getattr(error.response, "status_code", None) if error.response is not None else None
+            last_error = error
+            if key and _should_failover_jina_status(status_code) and index < len(keys) - 1:
+                events.append(f"{_jina_key_label(index)} status {status_code}")
+                continue
+            raise
+        except requests.RequestException as error:
+            last_error = error
+            if index < len(keys) - 1:
+                events.append(f"{_jina_key_label(index)} koneksi/API bermasalah")
+                continue
+            raise
+    if last_error:
+        raise last_error
+    raise ValueError("Tidak ada API key Jina yang dapat digunakan.")
+
+
 def _clean_text(value: Any, limit: int = 500) -> str:
     text = re.sub(r"\s+", " ", str(value or "")).strip()
     return text[:limit]
@@ -2036,32 +2151,34 @@ def fetch_raw_markdown(
     now: datetime | None = None,
     respond_with: str | None = None,
 ) -> tuple[str, dict[str, str]]:
-    """Ambil respons mentah dari Jina Search.
+    """Ambil respons mentah dari Jina Search dengan failover multi API key.
 
-    Dokumentasi Jina menyarankan `s.jina.ai/?q=` untuk SERP dan `Accept: application/json`
-    untuk hasil terstruktur berisi URL, judul, konten, dan timestamp bila tersedia.
-    Parser tetap mendukung Markdown sebagai fallback bila endpoint mengembalikannya.
+    `api_key` boleh berisi satu key atau beberapa key dipisahkan koma/newline.
+    Jika key pertama kena 401/403/429/5xx/koneksi bermasalah, request dicoba
+    otomatis memakai key berikutnya. Token tidak pernah dimasukkan ke metadata.
     """
-    if not api_key:
-        raise ValueError("JINA_API_KEY belum diatur.")
+    keys = jina_api_keys_from(api_key)
+    if not keys:
+        raise ValueError("JINA_API_KEY/JINA_API_KEYS belum diatur.")
 
     current_now = _as_jakarta(now)
-    query = (query or source_scoped_query(default_query(current_now), current_now)).strip()
+    original_query = (query or source_scoped_query(default_query(current_now), current_now)).strip()
     request_timeout = configured_request_timeout(timeout or DEFAULT_REQUEST_TIMEOUT)
     page_timeout = configured_jina_page_timeout(min(request_timeout, DEFAULT_JINA_PAGE_TIMEOUT))
     response_mode = (respond_with or configured_jina_respond_with()).strip().lower()
-    headers = {
-        "Authorization": f"Bearer {api_key}",
+    base_headers = {
         "Accept": "application/json",
         "X-Respond-With": response_mode,
         "X-Retain-Images": "none",
         "X-Md-Link-Style": "discarded",
         "X-Timeout": str(page_timeout),
-        "User-Agent": "news-monitor-streamlit/4.1-fast",
+        "User-Agent": "news-monitor-streamlit/8.0-jina-key-failover",
     }
-    query = _jina_safe_query(query)
+    safe_query = _jina_safe_query(original_query)
 
-    def do_request(search_query: str) -> requests.Response:
+    def do_request(key: str, search_query: str) -> requests.Response:
+        headers = dict(base_headers)
+        headers["Authorization"] = f"Bearer {key}"
         return requests.get(
             JINA_SEARCH_URL,
             params={"q": search_query},
@@ -2069,28 +2186,70 @@ def fetch_raw_markdown(
             timeout=request_timeout,
         )
 
-    response = do_request(query)
+    response: requests.Response | None = None
+    active_query = safe_query
     retried_after_422 = False
-    try:
-        response.raise_for_status()
-    except requests.HTTPError as error:
-        status_code = getattr(error.response, "status_code", None) if error.response is not None else None
-        if status_code != 422:
-            raise
-        retry_query = _jina_retry_query(query, current_now)
-        if not retry_query or retry_query == query:
-            raise
-        response = do_request(retry_query)
-        response.raise_for_status()
-        query = retry_query
-        retried_after_422 = True
+    failover_events: list[str] = []
+    used_key_index = 0
+    last_error: BaseException | None = None
 
+    for key_index, key in enumerate(keys):
+        query_for_key = safe_query
+        try:
+            response = do_request(key, query_for_key)
+            try:
+                response.raise_for_status()
+            except requests.HTTPError as error:
+                status_code = getattr(error.response, "status_code", None) if error.response is not None else None
+                if status_code == 422:
+                    retry_query = _jina_retry_query(query_for_key, current_now)
+                    if not retry_query or retry_query == query_for_key:
+                        raise
+                    response = do_request(key, retry_query)
+                    try:
+                        response.raise_for_status()
+                    except requests.HTTPError as retry_error:
+                        retry_status = getattr(retry_error.response, "status_code", None) if retry_error.response is not None else None
+                        last_error = retry_error
+                        if _should_failover_jina_status(retry_status) and key_index < len(keys) - 1:
+                            failover_events.append(f"{_jina_key_label(key_index)} retry status {retry_status}")
+                            continue
+                        raise
+                    query_for_key = retry_query
+                    retried_after_422 = True
+                elif _should_failover_jina_status(status_code) and key_index < len(keys) - 1:
+                    last_error = error
+                    failover_events.append(f"{_jina_key_label(key_index)} status {status_code}")
+                    continue
+                else:
+                    raise
+            raw_markdown = response.text.strip()
+            if not raw_markdown:
+                if key_index < len(keys) - 1:
+                    failover_events.append(f"{_jina_key_label(key_index)} respons kosong")
+                    continue
+                raise ValueError("Jina tidak mengembalikan isi respons.")
+            active_query = query_for_key
+            used_key_index = key_index
+            break
+        except requests.RequestException as error:
+            last_error = error
+            if key_index < len(keys) - 1:
+                failover_events.append(f"{_jina_key_label(key_index)} koneksi/API bermasalah")
+                continue
+            raise
+    else:
+        if last_error:
+            raise last_error
+        raise ValueError("Tidak ada API key Jina yang dapat digunakan.")
+
+    assert response is not None
     raw_markdown = response.text.strip()
     if not raw_markdown:
         raise ValueError("Jina tidak mengembalikan isi respons.")
 
     metadata = {
-        "query": query,
+        "query": active_query,
         "fetched_at": current_now.isoformat(),
         "today_jakarta": today_indonesia(current_now),
         "content_type": response.headers.get("content-type", "tidak diketahui"),
@@ -2101,9 +2260,12 @@ def fetch_raw_markdown(
         "jina_page_timeout_seconds": str(page_timeout),
         "quality_threshold_verified": str(MIN_VERIFIED_QUALITY_SCORE),
         "quality_threshold_unverified": str(MIN_UNVERIFIED_QUALITY_SCORE),
+        "jina_key_count": str(len(keys)),
+        "jina_key_used": _jina_key_label(used_key_index),
+        "jina_key_failovers": str(len(failover_events)),
+        "jina_key_failover_events": _jina_failover_summary(failover_events),
     }
     return raw_markdown, metadata
-
 
 def _reader_content_from_payload(payload: str) -> str:
     """Ambil field konten dari respons Jina Reader JSON/markdown secara fleksibel."""
@@ -2247,16 +2409,14 @@ def fetch_article_text_document(
         "X-Retain-Images": "none",
         "X-Md-Link-Style": "discarded",
         "X-Timeout": str(request_timeout),
-        "User-Agent": "news-monitor-streamlit/7.0-text-only-reader",
+        "User-Agent": "news-monitor-streamlit/8.0-text-only-reader-key-failover",
     }
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    response = requests.get(
+    response, key_metadata = _jina_reader_get_with_failover(
+        api_key,
         f"{JINA_READER_URL}{clean_url}",
         headers=headers,
         timeout=request_timeout + 3,
     )
-    response.raise_for_status()
     text = reader_payload_to_clean_txt(response.text, title=title, source_url=clean_url, limit=max_chars)
     if not text:
         return "", "Reader tidak menemukan teks artikel yang cukup informatif"
@@ -2289,17 +2449,15 @@ def fetch_article_information(
         "X-Retain-Images": "none",
         "X-Md-Link-Style": "discarded",
         "X-Timeout": str(request_timeout),
-        "User-Agent": "news-monitor-streamlit/6.0-info-scrape",
+        "User-Agent": "news-monitor-streamlit/8.0-info-scrape-key-failover",
     }
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
 
-    response = requests.get(
+    response, key_metadata = _jina_reader_get_with_failover(
+        api_key,
         f"{JINA_READER_URL}{url}",
         headers=headers,
         timeout=request_timeout + 3,
     )
-    response.raise_for_status()
     content = _reader_content_from_payload(response.text)
     info = extract_article_information(
         content,
@@ -2414,8 +2572,8 @@ def _fetch_rounds(
     configured_round_limit = configured_max_search_rounds() if max_search_rounds is None else max_search_rounds
     round_limit = max(0, min(configured_round_limit, len(PUBLISHER_SEARCH_GROUPS)))
     if len(articles) < target_results and round_limit > 0:
-        if not api_key:
-            raise ValueError("JINA_API_KEY belum diatur dan hasil RSS belum cukup.")
+        if not jina_api_keys_from(api_key):
+            raise ValueError("JINA_API_KEY/JINA_API_KEYS belum diatur dan hasil RSS belum cukup.")
         all_queries = fallback_queries(primary_query, now)
         queries = all_queries[:round_limit]
         for index, search_query in enumerate(queries):
@@ -2445,6 +2603,10 @@ def _fetch_rounds(
                 "jina_respond_with": round_metadata.get("jina_respond_with", metadata.get("jina_respond_with", "")),
                 "request_timeout_seconds": round_metadata.get("request_timeout_seconds", metadata.get("request_timeout_seconds", "")),
                 "jina_page_timeout_seconds": round_metadata.get("jina_page_timeout_seconds", metadata.get("jina_page_timeout_seconds", "")),
+                "jina_key_count": round_metadata.get("jina_key_count", metadata.get("jina_key_count", "0")),
+                "jina_key_used": round_metadata.get("jina_key_used", metadata.get("jina_key_used", "")),
+                "jina_key_failovers": round_metadata.get("jina_key_failovers", metadata.get("jina_key_failovers", "0")),
+                "jina_key_failover_events": round_metadata.get("jina_key_failover_events", metadata.get("jina_key_failover_events", "")),
             })
             actual_query = round_metadata.get("query", search_query)
             raw_sections.append(f"# Respons pencarian Jina {index + 1}\n\nQuery: {actual_query}\n\n{raw_markdown}")
@@ -2505,6 +2667,7 @@ def _fetch_rounds(
             "strong_validity_articles": str(sum(str(item.get("validity_status", "")).startswith("✅") for item in articles)),
             "structured_extraction": "enabled",
             "event_dedupe": "enabled",
+        "jina_key_count": str(jina_api_key_count(api_key)),
             "result_mode": "verified_today" if verified_count else (
                 "needs_time_verification" if used_unverified else "none"
             ),
