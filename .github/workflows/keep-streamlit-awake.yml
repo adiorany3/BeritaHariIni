@@ -11,4 +11,4 @@ jobs:
     steps:
       - name: Ping Streamlit app
         run: |
-          curl -L --max-time 60 --retry 3 --retry-delay 10 "https://yamlku.streamlit.app/" || true
+          curl -L --max-time 60 --retry 3 --retry-delay 10 "https://beritaterbaru.streamlit.app/" || true
