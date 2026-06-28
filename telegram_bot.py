@@ -41,6 +41,44 @@ MAX_STORED_TELEGRAM_UPDATES = 600
 MAX_TOPICS_PER_CHAT = 12
 
 
+class TelegramPollingConflict(RuntimeError):
+    """Raised when Telegram rejects getUpdates because another polling client is active."""
+
+
+_TELEGRAM_TOKEN_PATTERNS = (
+    re.compile(r"/bot[^/\s]+/"),
+    re.compile(r"bot\d+:[A-Za-z0-9_-]+"),
+)
+
+
+def redact_sensitive(value: Any) -> str:
+    """Hilangkan token/secret dari pesan error sebelum masuk UI/log.
+
+    requests.HTTPError dari Telegram sering membawa URL lengkap seperti
+    https://api.telegram.org/bot<TOKEN>/getUpdates. Pesan seperti itu tidak
+    boleh tampil di Streamlit, Telegram, maupun GitHub logs.
+    """
+    text = str(value or "")
+    for pattern in _TELEGRAM_TOKEN_PATTERNS:
+        text = pattern.sub(lambda match: match.group(0).replace(match.group(0), "/bot<REDACTED>/") if match.group(0).startswith('/bot') else "bot<REDACTED>", text)
+    # Jaga-jaga untuk token yang sudah terlanjur dimasking GitHub atau format lain.
+    text = re.sub(r"https://api\.telegram\.org/bot[^\s]+", "https://api.telegram.org/bot<REDACTED>", text)
+    return text
+
+
+def _telegram_http_error_message(method: str, error: requests.HTTPError) -> str:
+    response = getattr(error, "response", None)
+    status = getattr(response, "status_code", None)
+    if status == 409 and method == "getUpdates":
+        return (
+            "Polling Telegram dihentikan karena ada instance bot lain yang sedang aktif. "
+            "Matikan auto_start di salah satu deploy, hentikan worker/VPS lain, atau pastikan hanya satu proses yang menjalankan getUpdates."
+        )
+    if status:
+        return f"Telegram API {method} gagal dengan HTTP {status}."
+    return f"Telegram API {method} gagal."
+
+
 HELP_TEXT = """📰 <b>Bot Berita Hari Ini</b>
 
 Kirim tema berita, nanti bot akan mencari artikel hari ini dan membalas:
@@ -416,11 +454,18 @@ class TelegramNewsBot:
         return TELEGRAM_API_BASE.format(token=self.token, method=method)
 
     def request(self, method: str, payload: dict[str, Any], *, timeout: int = 30) -> dict[str, Any]:
-        response = self.session.post(self.api_url(method), json=payload, timeout=timeout)
-        response.raise_for_status()
-        data = response.json()
+        try:
+            response = self.session.post(self.api_url(method), json=payload, timeout=timeout)
+            response.raise_for_status()
+            data = response.json()
+        except requests.HTTPError as error:
+            raise RuntimeError(_telegram_http_error_message(method, error)) from None
+        except requests.RequestException as error:
+            raise RuntimeError(redact_sensitive(f"Telegram API {method} gagal: {error}")) from None
+        except ValueError:
+            raise RuntimeError(f"Telegram API {method} mengembalikan respons yang tidak valid.") from None
         if not data.get("ok", False):
-            raise RuntimeError(f"Telegram API error pada {method}: {data}")
+            raise RuntimeError(redact_sensitive(f"Telegram API error pada {method}: {data}"))
         return data
 
     def get_me(self) -> dict[str, Any]:
@@ -450,15 +495,33 @@ class TelegramNewsBot:
         }
         if offset is not None:
             payload["offset"] = offset
-        response = self.session.post(
-            self.api_url("getUpdates"),
-            json=payload,
-            timeout=poll_timeout + 10,
-        )
-        response.raise_for_status()
-        data = response.json()
+        try:
+            response = self.session.post(
+                self.api_url("getUpdates"),
+                json=payload,
+                timeout=poll_timeout + 10,
+            )
+            response.raise_for_status()
+            data = response.json()
+        except requests.HTTPError as error:
+            response = getattr(error, "response", None)
+            status = getattr(response, "status_code", None)
+            message = _telegram_http_error_message("getUpdates", error)
+            if status == 409:
+                raise TelegramPollingConflict(message) from None
+            raise RuntimeError(message) from None
+        except requests.RequestException as error:
+            raise RuntimeError(redact_sensitive(f"Telegram getUpdates gagal: {error}")) from None
+        except ValueError:
+            raise RuntimeError("Telegram getUpdates mengembalikan respons yang tidak valid.") from None
         if not data.get("ok", False):
-            raise RuntimeError(f"Telegram API error pada getUpdates: {data}")
+            description = str(data.get("description") or "")
+            if "conflict" in description.casefold() or data.get("error_code") == 409:
+                raise TelegramPollingConflict(
+                    "Polling Telegram dihentikan karena ada instance bot lain yang sedang aktif. "
+                    "Matikan auto_start di salah satu deploy, hentikan worker/VPS lain, atau pastikan hanya satu proses yang menjalankan getUpdates."
+                )
+            raise RuntimeError(redact_sensitive(f"Telegram API error pada getUpdates: {data}"))
         return list(data.get("result") or [])
 
     def send_message(self, chat_id: int, text: str) -> None:
@@ -650,10 +713,17 @@ class TelegramNewsBot:
             except KeyboardInterrupt:
                 LOGGER.info("Telegram bot dihentikan.")
                 return
-            except Exception as error:
-                LOGGER.exception("Polling Telegram gagal: %s", error)
+            except TelegramPollingConflict as error:
+                safe_message = redact_sensitive(error)
+                LOGGER.warning("Polling Telegram konflik: %s", safe_message)
                 if status_callback:
-                    status_callback("error", f"Polling Telegram gagal: {error}")
+                    status_callback("conflict", safe_message)
+                return
+            except Exception as error:
+                safe_message = redact_sensitive(error)
+                LOGGER.error("Polling Telegram gagal: %s", safe_message)
+                if status_callback:
+                    status_callback("error", f"Polling Telegram gagal: {safe_message}")
                 time.sleep(3)
         LOGGER.info("Telegram bot stop_event diterima.")
         if status_callback:

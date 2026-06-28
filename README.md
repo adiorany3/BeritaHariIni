@@ -299,8 +299,9 @@ news_limit = 5
 news_timeout = 25
 max_search_rounds = 2
 poll_timeout = 30
-# Agar bot ikut hidup dari app.py di Streamlit Cloud.
-auto_start = true
+# Untuk broadcast pagi GitHub Actions saja, biarkan false.
+# Set true hanya jika ingin bot interaktif di Streamlit ikut membalas chat secara real-time.
+auto_start = false
 # Wajib untuk long polling jika token pernah dipasang webhook.
 delete_webhook_on_start = true
 drop_pending_updates = false
@@ -324,7 +325,7 @@ Streamlit Community Cloud menjalankan `app.py`. Karena itu versi ini menambahkan
 Langkah pakai di Streamlit Cloud:
 
 1. Isi secret `[telegram].bot_token` dan `JINA_API_KEY`.
-2. Set `auto_start = true` bila ingin bot start otomatis saat aplikasi aktif.
+2. Untuk broadcast pagi GitHub Actions saja, gunakan `auto_start = false`. Set `auto_start = true` hanya jika ingin bot interaktif di Streamlit ikut membalas chat secara real-time.
 3. Deploy/reboot app, lalu buka sidebar **Telegram Bot**.
 4. Klik **Tes token & webhook** untuk memastikan token valid dan webhook kosong.
 5. Bila `auto_start` belum aktif, klik **Mulai bot**.
@@ -336,6 +337,24 @@ Jika token pernah dipakai webhook di platform lain, polling bisa diam. Set berik
 delete_webhook_on_start = true
 drop_pending_updates = false
 ```
+
+
+### Mengatasi 409 Conflict getUpdates
+
+Telegram hanya mengizinkan satu proses long polling (`getUpdates`) untuk satu token bot. Jika muncul 409 Conflict, artinya token yang sama sedang dipakai oleh instance lain, misalnya Streamlit `auto_start=true`, `python telegram_bot.py` lokal/VPS, atau deploy lain yang juga polling.
+
+Versi ini sudah meredaksi token dari UI/log dan menghentikan polling yang konflik tanpa mengulang error berkali-kali. Solusinya:
+
+1. Untuk broadcast pagi GitHub Actions saja, set di Streamlit Secrets:
+
+```toml
+[telegram]
+auto_start = false
+```
+
+2. Jika ingin bot interaktif dari Streamlit, pastikan tidak ada proses lain yang menjalankan `python telegram_bot.py` dengan token yang sama.
+3. Klik **Stop bot** di sidebar Streamlit pada deploy lama, atau reboot app setelah mengubah Secrets.
+4. Jika token pernah tampil di chat/log/screenshot, buat token baru lewat BotFather dan ganti semua Secrets.
 
 Catatan: background thread di Streamlit Cloud aktif selama server/app Streamlit hidup. Untuk bot yang harus respons 24/7 tanpa bergantung app tidur/rerun, jalankan worker terpisah di VPS/Render/Railway dengan:
 
@@ -379,7 +398,7 @@ Worker eksternal tetap bisa memakai environment variable atau file lokal `.strea
 
 Cek tiga hal ini dulu:
 
-1. Pastikan hanya satu mode aktif. Untuk broadcast pagi GitHub Actions, Streamlit bot interaktif boleh dimatikan dengan `auto_start = false` jika tidak diperlukan.
+1. Pastikan hanya satu mode polling aktif. Untuk broadcast pagi GitHub Actions saja, matikan Streamlit bot interaktif dengan `auto_start = false`.
 2. Pastikan workflow punya permission `contents: write`, karena file `data/telegram_digest_state.json` perlu di-commit agar run berikutnya tahu digest hari itu sudah terkirim.
 3. Jangan set `WORKER_FORCE_SEND=1` permanen. Itu memang memaksa kirim ulang dan mengabaikan dedupe.
 
@@ -392,7 +411,7 @@ Untuk mengirim ulang secara sadar dari tab Actions, set variable `WORKER_FORCE_S
 - Dashboard hanya menampilkan status token tersedia/tidak, tidak pernah mencetak nilai token.
 - Panel Telegram di sidebar menyediakan tombol tes token/webhook tanpa menampilkan token.
 - `config.py` membaca prioritas: environment variable → Streamlit Secrets root-level → Streamlit Secrets sectioned.
-- Jika token pernah terlanjur muncul di commit, chat, screenshot, atau log, segera rotate token di BotFather/Jina.
+- Jika token Telegram pernah terlanjur muncul di commit, chat, screenshot, atau log, segera rotate token di BotFather. Jika Jina API key yang bocor, rotate key Jina juga.
 
 ## Rekomendasi tuning
 

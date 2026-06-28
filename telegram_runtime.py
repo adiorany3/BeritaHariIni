@@ -11,7 +11,7 @@ from dataclasses import dataclass, asdict
 from typing import Any
 
 from config import get_secret_bool, get_secret_int
-from telegram_bot import DEFAULT_POLL_TIMEOUT, create_bot_from_env
+from telegram_bot import DEFAULT_POLL_TIMEOUT, create_bot_from_env, redact_sensitive
 
 
 @dataclass
@@ -51,10 +51,13 @@ class StreamlitTelegramRuntime:
             return self._status.to_dict()
 
     def _set_event(self, event: str, message: str) -> None:
+        safe_message = redact_sensitive(message)
         with self._lock:
-            self._status.last_event = message or event
+            self._status.last_event = safe_message or event
             if event == "error":
-                self._status.last_error = message
+                self._status.last_error = safe_message
+            elif event == "conflict":
+                self._status.last_error = safe_message
             elif event in {"running", "webhook_deleted", "processed", "updates"}:
                 # Jangan hapus warning/error lama sampai ada event sukses yang berarti.
                 if event in {"processed", "running"}:
@@ -107,7 +110,7 @@ class StreamlitTelegramRuntime:
                 drop_pending_updates=drop_pending_updates,
             )
         except Exception as error:  # pragma: no cover - safety net runtime.
-            self._set_event("error", f"Bot gagal start: {error}")
+            self._set_event("error", f"Bot gagal start: {redact_sensitive(error)}")
         finally:
             with self._lock:
                 self._status.running = False

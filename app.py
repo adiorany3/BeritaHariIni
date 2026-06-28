@@ -23,6 +23,14 @@ st.set_page_config(page_title="Monitor Berita Hari Ini", page_icon="📰", layou
 apply_secrets_to_environment()
 
 
+def safe_display_error(error: Any) -> str:
+    """Redaksi token Telegram/Jina dari pesan error sebelum tampil di Streamlit."""
+    try:
+        from telegram_bot import redact_sensitive
+
+        return redact_sensitive(error)
+    except Exception:
+        return str(error or "")
 
 
 
@@ -62,11 +70,11 @@ def render_text_only_reader_page(source_url: str) -> None:
                 timeout=int(os.getenv("NEWS_ARTICLE_SCRAPE_TIMEOUT", "12") or "12"),
             )
     except requests.RequestException as error:
-        st.error(f"Gagal mengambil teks dari Jina Reader: {error}")
+        st.error(f"Gagal mengambil teks dari Jina Reader: {safe_display_error(error)}")
         st.info("Coba buka link asli, atau ulangi beberapa saat lagi jika API sedang membatasi request.")
         return
     except Exception as error:
-        st.error(f"Gagal menyiapkan teks berita: {error}")
+        st.error(f"Gagal menyiapkan teks berita: {safe_display_error(error)}")
         return
 
     st.success("Teks berita berhasil dibersihkan." if text else status)
@@ -263,9 +271,9 @@ def render_telegram_controls() -> None:
         runtime.start()
     status = runtime.status()
     st.write("Polling:", "🟢 aktif" if status.get("running") else "⚪ nonaktif")
-    st.caption(f"Event terakhir: {status.get('last_event', '-')}")
+    st.caption(f"Event terakhir: {safe_display_error(status.get('last_event', '-'))}")
     if status.get("last_error"):
-        st.error(status["last_error"])
+        st.error(safe_display_error(status["last_error"]))
     if status.get("updates_processed"):
         st.caption(f"Update diproses: {status['updates_processed']}")
 
@@ -292,7 +300,7 @@ def render_telegram_controls() -> None:
             else:
                 st.caption("Webhook kosong; mode long polling/getUpdates bisa menerima pesan.")
         except Exception as error:
-            st.error(f"Tes Telegram gagal: {error}")
+            st.error(f"Tes Telegram gagal: {safe_display_error(error)}")
 
     if not jina_ready:
         st.warning("Bot bisa menjawab /start, tapi pencarian berita butuh JINA_API_KEY.")

@@ -3,17 +3,20 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+import requests
 from pathlib import Path
 from threading import Event
 from unittest.mock import Mock, patch
 
 from telegram_bot import (
     TelegramNewsBot,
+    TelegramPollingConflict,
     TelegramUpdateDeduper,
     build_news_messages,
     chat_is_allowed,
     normalise_theme,
     parse_allowed_chat_ids,
+    redact_sensitive,
 )
 
 
@@ -145,6 +148,60 @@ class TelegramBotTests(unittest.TestCase):
         self.assertIn("Buka berita asli", text)
 
 
+
+
+    def test_redact_sensitive_removes_telegram_token_from_error_url(self) -> None:
+        leaked = "409 Client Error: Conflict for url: https://api.telegram.org/bot123456:ABC_def-GHI/getUpdates"
+        safe = redact_sensitive(leaked)
+        self.assertIn("bot<REDACTED>", safe)
+        self.assertNotIn("123456:ABC_def-GHI", safe)
+        self.assertNotIn("https://api.telegram.org/bot123456", safe)
+
+    def test_get_updates_409_conflict_raises_safe_message_without_token(self) -> None:
+        response = requests.Response()
+        response.status_code = 409
+        response.url = "https://api.telegram.org/bot123456:ABC_def-GHI/getUpdates"
+        error = requests.HTTPError(
+            "409 Client Error: Conflict for url: https://api.telegram.org/bot123456:ABC_def-GHI/getUpdates",
+            response=response,
+        )
+        session = Mock()
+        session.post.return_value.raise_for_status.side_effect = error
+        bot = TelegramNewsBot(token="123456:ABC_def-GHI", jina_api_key="jina-token", session=session)
+
+        with self.assertRaises(TelegramPollingConflict) as ctx:
+            bot.get_updates(None, 5)
+
+        message = str(ctx.exception)
+        self.assertIn("instance bot lain", message)
+        self.assertNotIn("123456:ABC_def-GHI", message)
+        self.assertNotIn("api.telegram.org/bot", message)
+
+    def test_run_polling_409_conflict_reports_once_and_stops_without_token(self) -> None:
+        response = requests.Response()
+        response.status_code = 409
+        response.url = "https://api.telegram.org/bot123456:ABC_def-GHI/getUpdates"
+        error = requests.HTTPError(
+            "409 Client Error: Conflict for url: https://api.telegram.org/bot123456:ABC_def-GHI/getUpdates",
+            response=response,
+        )
+        session = Mock()
+        session.post.return_value.raise_for_status.side_effect = error
+        bot = TelegramNewsBot(token="123456:ABC_def-GHI", jina_api_key="jina-token", session=session)
+        events: list[tuple[str, str]] = []
+
+        bot.run_polling(
+            poll_timeout=5,
+            delete_webhook_on_start=False,
+            status_callback=lambda event, message: events.append((event, message)),
+        )
+
+        self.assertEqual(session.post.call_count, 1)
+        self.assertTrue(any(event == "conflict" for event, _ in events))
+        joined = "\n".join(message for _, message in events)
+        self.assertIn("instance bot lain", joined)
+        self.assertNotIn("123456:ABC_def-GHI", joined)
+        self.assertNotIn("api.telegram.org/bot", joined)
 
     def test_update_deduper_claims_message_only_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
