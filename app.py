@@ -91,6 +91,32 @@ if reader_source_url:
 st_autorefresh(interval=300_000, key="news_auto_refresh")
 
 
+def format_reason_text(value: Any) -> str:
+    """Ubah alasan/skor berbentuk list/dict/string menjadi teks aman untuk Streamlit.
+
+    Data lama atau hasil enrich baru bisa menyimpan reasons sebagai list.
+    Streamlit sebelumnya membandingkan list dengan set string dan memicu
+    `TypeError: unhashable type: 'list'`. Helper ini membuat rendering tahan
+    terhadap semua bentuk umum.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        parts = [str(item).strip() for item in value if str(item).strip()]
+        return ", ".join(parts)
+    if isinstance(value, dict):
+        parts = []
+        for key, item in value.items():
+            if item in (None, ""):
+                continue
+            parts.append(f"{key}: {item}")
+        return ", ".join(parts)
+    text = str(value).strip()
+    if text in {"", "[]", "{}", "None", "null"}:
+        return ""
+    return text.strip("[]").replace("'", "")
+
+
 def normalise_article(article: dict[str, Any]) -> dict[str, Any]:
     """Beri nilai aman untuk data lama sebelum versi kategori tersedia."""
     value = dict(article)
@@ -102,6 +128,12 @@ def normalise_article(article: dict[str, Any]) -> dict[str, Any]:
     value.setdefault("time_note", "")
     value.setdefault("quality_score", "0")
     value.setdefault("quality_reasons", [])
+    value.setdefault("validity_score", 0)
+    value.setdefault("validity_status", "")
+    value.setdefault("validity_reasons", [])
+    value.setdefault("supporting_source_count", 1)
+    value.setdefault("supporting_sources", [])
+    value.setdefault("structured_info", {})
     value.setdefault("summary", "")
     value.setdefault("scraped_info", "")
     value.setdefault("scrape_status", "")
@@ -162,14 +194,12 @@ def render_article_card(article: dict[str, Any]) -> None:
             st.write(info)
         else:
             st.info("Konten artikel belum berhasil di-scrape. Gunakan link teks Jina untuk membaca versi teks, atau buka link asli.")
-        if article.get("quality_reasons") not in {"", "[]"}:
-            reasons = str(article.get("quality_reasons", "")).strip("[]").replace("'", "")
-            if reasons:
-                st.caption(f"Alasan lolos: {reasons}")
-        if article.get("validity_reasons") not in {"", "[]", None}:
-            validity_reasons = ", ".join(article.get("validity_reasons", [])) if isinstance(article.get("validity_reasons"), list) else str(article.get("validity_reasons"))
-            if validity_reasons:
-                st.caption(f"Alasan validitas: {validity_reasons}")
+        reasons = format_reason_text(article.get("quality_reasons"))
+        if reasons:
+            st.caption(f"Alasan lolos: {reasons}")
+        validity_reasons = format_reason_text(article.get("validity_reasons"))
+        if validity_reasons:
+            st.caption(f"Alasan validitas: {validity_reasons}")
         if isinstance(article.get("supporting_sources"), list) and len(article.get("supporting_sources", [])) > 1:
             st.caption("Sumber terkait: " + ", ".join(article.get("supporting_sources", [])[:5]))
         if article.get("time_status") == "needs_time_verification":
